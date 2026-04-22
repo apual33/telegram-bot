@@ -356,7 +356,7 @@ async def _execute(
 
     if name == "save_journal":
         import embeddings as emb_module
-        vec = emb_module.encode(inputs["content"])
+        vec = await emb_module.encode(inputs["content"], client)
         jid = database.save_journal_entry(db_path, chat_id, inputs["content"], vec)
         return {"ok": True, "id": jid}
 
@@ -366,7 +366,7 @@ async def _execute(
         entries = database.get_journal_entries(db_path, chat_id, since_days=since_days)
         if not entries:
             return {"results": [], "count": 0}
-        results = emb_module.top_k(inputs["query"], entries, k=5)
+        results = await emb_module.top_k(inputs["query"], entries, client, k=5)
         return {"results": results, "count": len(results)}
 
     if name == "research":

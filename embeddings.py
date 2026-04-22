@@ -1,27 +1,21 @@
 """
-Local sentence-embeddings via sentence-transformers (all-MiniLM-L6-v2).
-The model (~90 MB) is downloaded on first use and cached by the library.
+Voyage embeddings via the Anthropic API (voyage-3 model).
 """
 from __future__ import annotations
 
 import json
 import math
 
-_model = None
-_MODEL_NAME = "all-MiniLM-L6-v2"
+from anthropic import AsyncAnthropic
 
 
-def _get_model():
-    global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer(_MODEL_NAME)
-    return _model
-
-
-def encode(text: str) -> list[float]:
-    vec = _get_model().encode(text, convert_to_numpy=True)
-    return vec.tolist()
+async def encode(text: str, client: AsyncAnthropic) -> list[float]:
+    response = await client.beta.embeddings.create(
+        model="voyage-3",
+        input=[text],
+        input_type="document",
+    )
+    return response.embeddings[0].embedding
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -33,13 +27,13 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def top_k(query: str, entries: list[dict], k: int = 5) -> list[dict]:
+async def top_k(query: str, entries: list[dict], client: AsyncAnthropic, k: int = 5) -> list[dict]:
     """
     Rank `entries` by cosine similarity to `query`.
     Each entry must have an 'embedding' field (JSON string or list).
     Returns the top-k entries (without the embedding field), sorted by score desc.
     """
-    query_vec = encode(query)
+    query_vec = await encode(query, client)
     scored = []
     for entry in entries:
         emb = entry["embedding"]
@@ -51,7 +45,7 @@ def top_k(query: str, entries: list[dict], k: int = 5) -> list[dict]:
     scored.sort(key=lambda x: x[0], reverse=True)
     results = []
     for score, entry in scored[:k]:
-        e = {k: v for k, v in entry.items() if k != "embedding"}
+        e = {key: val for key, val in entry.items() if key != "embedding"}
         e["score"] = round(score, 4)
         results.append(e)
     return results
