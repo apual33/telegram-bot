@@ -1,7 +1,7 @@
 import json
 import logging
 import smtplib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
@@ -39,15 +39,20 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
                 "remind_at": {
                     "type": "string",
                     "description": (
-                        f"ISO 8601 datetime with UTC offset for when to send a reminder. "
-                        f"The current date/time is {now_iso}. "
-                        f"Example for tomorrow at 10:00: {tomorrow_iso}T10:00:00{tz_offset}. "
-                        "Always include the UTC offset. "
-                        "For relative expressions ('in 5 minutes', 'in 2 hours'), add exactly "
-                        f"that duration to the current datetime ({now_iso}). "
-                        "For day-relative expressions (heute, morgen, übermorgen), use the "
-                        "pre-resolved dates from the system prompt. "
-                        "Omit entirely if no reminder is needed."
+                        f"ISO 8601 datetime with UTC offset for an absolute reminder time. "
+                        f"Use ONLY for clock-time requests like 'at 10:00' or 'tomorrow at 9'. "
+                        f"Example: {tomorrow_iso}T10:00:00{tz_offset}. "
+                        "Use pre-resolved dates from the system prompt for heute/morgen/übermorgen. "
+                        "Do NOT use for relative expressions like 'in 5 minutes' — use remind_in_minutes instead."
+                    ),
+                },
+                "remind_in_minutes": {
+                    "type": "integer",
+                    "description": (
+                        "Use for relative reminders like 'in 5 minutes' or 'in 2 hours'. "
+                        "Pass the total number of minutes from now. "
+                        "Examples: 'in 5 minutes' → 5, 'in 2 hours' → 120, 'in 1.5 hours' → 90. "
+                        "The server will compute the exact time. Do not use together with remind_at."
                     ),
                 },
             },
@@ -226,10 +231,10 @@ def _system_prompt(report_email: str = "") -> str:
         f"You are a personal assistant. Heute ist {today_de}, {now.strftime('%H:%M')} Uhr (UTC-Offset: {tz_offset_iso}).\n"
         f"Aktuelle Zeit (ISO 8601): {now_iso}\n"
         f"Vorberechnete Daten — heute: {now.strftime('%Y-%m-%d')}, morgen: {tomorrow_iso}, übermorgen: {day_after_iso}.\n"
-        f"When creating reminders: for relative expressions ('in 5 minutes', 'in 2 hours') add that "
-        f"duration to the current datetime ({now_iso}). For day references (heute/morgen/übermorgen) "
-        f"use the pre-resolved dates above. remind_at must always be a full ISO 8601 datetime with "
-        f"UTC offset, e.g. {tomorrow_iso}T10:00:00{tz_offset_iso}.\n\n"
+        f"When creating reminders: for relative expressions ('in 5 minutes', 'in 2 hours') use "
+        f"remind_in_minutes (e.g. 5 or 120) — the server computes the exact time. "
+        f"For absolute times ('at 10:00', 'morgen um 9') use remind_at as a full ISO 8601 datetime "
+        f"with UTC offset, e.g. {tomorrow_iso}T10:00:00{tz_offset_iso}.\n\n"
         "You can:\n"
         "- Manage to-dos and reminders: use create_todo to add tasks (pass remind_at for timed reminders), "
         "list_todos to show open tasks, complete_todo to mark done\n"
@@ -329,7 +334,9 @@ async def _execute(
     logger.info("Tool call: %s | chat_id=%d | db=%s", name, chat_id, db_path)
     if name == "create_todo":
         remind_at = None
-        if inputs.get("remind_at"):
+        if inputs.get("remind_in_minutes") is not None:
+            remind_at = datetime.now(timezone.utc) + timedelta(minutes=int(inputs["remind_in_minutes"]))
+        elif inputs.get("remind_at"):
             remind_at = datetime.fromisoformat(inputs["remind_at"])
         tid = database.create_todo(db_path, chat_id, inputs["title"], remind_at)
         if remind_at:
@@ -352,7 +359,7 @@ async def _execute(
         for todo in todos:
             if todo.get("remind_at"):
                 todo["scheduled_for_display"] = _fmt_berlin(
-                    datetime.fromisoformat(todo["remind_at"])
+                    datetime.fromisoformat(todo["remind_at"]).replace(tzinfo=timezone.utc)
                 )
         return {"todos": todos, "count": len(todos)}
 
