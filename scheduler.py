@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Bot
 
 import database
 
@@ -71,14 +71,12 @@ class ReminderScheduler:
         )
 
     async def _fire(self, todo_id: int, chat_id: int, title: str) -> None:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Done ✓", callback_data=f"done:{todo_id}"),
-            InlineKeyboardButton("Not yet", callback_data=f"notyet:{todo_id}"),
-        ]])
         await self._bot.send_message(
             chat_id=chat_id,
-            text=f"⏰ *Reminder:* {title}",
+            text=f"⏰ *Erinnerung:* {title}",
             parse_mode="Markdown",
-            reply_markup=keyboard,
         )
         database.mark_reminded(self._db_path, todo_id)
+        # Save to history so the AI has todo_id in context for snooze/delete replies
+        history_text = f"⏰ Erinnerung: {title} [todo_id:{todo_id}]"
+        database.append_history(self._db_path, chat_id, "assistant", history_text)

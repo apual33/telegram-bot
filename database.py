@@ -1,7 +1,7 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def init_db(db_path: str) -> None:
@@ -121,6 +121,24 @@ def get_due_reminders(db_path: str) -> list[dict]:
 def mark_reminded(db_path: str, todo_id: int) -> None:
     with _conn(db_path) as con:
         con.execute("UPDATE todos SET reminded = 1 WHERE id = ?", (todo_id,))
+
+
+def snooze_todo(db_path: str, todo_id: int, minutes: int) -> dict | None:
+    """Add `minutes` to remind_at and reset reminded=0. Returns {'title', 'remind_at'} or None."""
+    with _conn(db_path) as con:
+        row = con.execute(
+            "SELECT title, remind_at FROM todos WHERE id = ? AND done = 0", (todo_id,)
+        ).fetchone()
+        if not row or not row["remind_at"]:
+            return None
+        old_dt = datetime.fromisoformat(row["remind_at"]).replace(tzinfo=timezone.utc)
+        new_dt = old_dt + timedelta(minutes=minutes)
+        new_str = new_dt.strftime("%Y-%m-%d %H:%M:%S")
+        con.execute(
+            "UPDATE todos SET remind_at = ?, reminded = 0 WHERE id = ?",
+            (new_str, todo_id),
+        )
+        return {"title": row["title"], "remind_at": new_str}
 
 
 # ── Notes ─────────────────────────────────────────────────────────────────────

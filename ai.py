@@ -125,6 +125,33 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
         },
     },
     {
+        "name": "snooze_todo",
+        "description": (
+            "Postpone a reminder by adding minutes to its scheduled time. "
+            "Use when the user says 'verschieben', 'später', 'nicht jetzt', or similar after a reminder fires. "
+            "The todo_id is visible in the conversation history as [todo_id:X] on the reminder message."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "todo_id": {
+                    "type": "integer",
+                    "description": "The id of the todo to snooze. Read it from [todo_id:X] in the reminder message.",
+                },
+                "minutes": {
+                    "type": "integer",
+                    "description": (
+                        "Minutes to add to the current remind_at. "
+                        "'um einen Tag' → 1440, 'morgen' → 1440, '2 Stunden' → 120, "
+                        "'eine Stunde' → 60, '30 Minuten' → 30. "
+                        "If the user just says 'verschieben' with no duration, use 1440 (one day)."
+                    ),
+                },
+            },
+            "required": ["todo_id", "minutes"],
+        },
+    },
+    {
         "name": "save_journal",
         "description": (
             "Save a journal entry — a thought, idea, observation, or reflection from the user. "
@@ -194,7 +221,7 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
     },
 ]  # end of _build_tools return value
 
-_CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "save_note", "search_notes", "research", "save_journal", "search_journal", "send_email"}
+_CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "snooze_todo", "save_note", "search_notes", "research", "save_journal", "search_journal", "send_email"}
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
@@ -245,6 +272,11 @@ def _system_prompt(report_email: str = "") -> str:
         "- list_todos: call this ALWAYS when asked for todos/tasks — never answer from memory\n"
         "  - List EXACTLY the items in 'todos', state count as EXACTLY the 'count' field from the result\n"
         "- complete_todo: call when user says they finished a task; use list_todos first if you need the id\n"
+        "- snooze_todo: call when user replies to a reminder with 'verschieben', 'später', 'nicht jetzt', "
+        "'noch nicht', or similar. Read the todo_id from [todo_id:X] in the reminder message in history. "
+        "When the user says this, first reply offering two options: 'Verschieben' and 'Löschen'. "
+        "When they choose 'verschieben' (or specify a duration), call snooze_todo with the id and minutes. "
+        "When they choose 'löschen', call complete_todo with the id.\n"
         "- save_note / search_notes: for short notes, references, follow-ups\n"
         "- save_journal / search_journal: for longer thoughts, ideas, reflections\n"
         "- research: for web lookups; return the result as-is\n"
@@ -405,6 +437,14 @@ async def _execute_inner(
     if name == "complete_todo":
         updated = database.complete_todo(db_path, inputs["todo_id"])
         return {"ok": updated}
+
+    if name == "snooze_todo":
+        result = database.snooze_todo(db_path, inputs["todo_id"], inputs["minutes"])
+        if result is None:
+            return {"ok": False, "error": "Todo not found or has no reminder set"}
+        new_dt = datetime.fromisoformat(result["remind_at"]).replace(tzinfo=timezone.utc)
+        sched.add_reminder(inputs["todo_id"], chat_id, result["title"], new_dt)
+        return {"ok": True, "scheduled_for_display": _fmt_berlin(new_dt)}
 
     if name == "save_journal":
         import embeddings as emb_module
