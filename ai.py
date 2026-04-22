@@ -296,8 +296,15 @@ async def run(
 
         text_parts = [b.text for b in response.content if b.type == "text"]
 
+        logger.info(
+            "API response | stop_reason=%s | blocks=%s",
+            response.stop_reason,
+            [{"type": b.type, "name": getattr(b, "name", None)} for b in response.content],
+        )
+
         if response.stop_reason != "tool_use":
             # end_turn, or web search completed entirely server-side
+            logger.info("Returning early: stop_reason=%s (no tool execution)", response.stop_reason)
             return "\n".join(text_parts) or "(no response)"
 
         # Only client-side tool_use blocks require action.
@@ -307,13 +314,24 @@ async def run(
             if b.type == "tool_use" and b.name in _CLIENT_TOOLS
         ]
 
+        all_tool_blocks = [b for b in response.content if b.type == "tool_use"]
+        logger.info(
+            "Tool blocks in response: total=%d client=%d names=%s",
+            len(all_tool_blocks),
+            len(client_calls),
+            [b.name for b in all_tool_blocks],
+        )
+
         if not client_calls:
             # stop_reason was "tool_use" but only server tools fired; return text
+            logger.warning("stop_reason=tool_use but no client-side tool calls found — returning text without execution")
             return "\n".join(text_parts) or "(no response)"
 
         tool_results = []
         for call in client_calls:
+            logger.info("Executing tool: %s | inputs=%s", call.name, call.input)
             result = await _execute(call.name, call.input, chat_id, db_path, sched, config, client)
+            logger.info("Tool result: %s | result=%s", call.name, result)
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": call.id,
@@ -331,14 +349,34 @@ async def _execute(
     config: Config | None = None,
     client: AsyncAnthropic | None = None,
 ) -> dict:
-    logger.info("Tool call: %s | chat_id=%d | db=%s", name, chat_id, db_path)
+    logger.info("_execute called | tool=%s | chat_id=%d | db_path=%s | inputs=%s", name, chat_id, db_path, inputs)
+    try:
+        return await _execute_inner(name, inputs, chat_id, db_path, sched, config, client)
+    except Exception:
+        logger.exception("_execute FAILED | tool=%s | chat_id=%d | inputs=%s", name, chat_id, inputs)
+        return {"ok": False, "error": "internal error — check server logs"}
+
+
+async def _execute_inner(
+    name: str,
+    inputs: dict,
+    chat_id: int,
+    db_path: str,
+    sched: ReminderScheduler,
+    config: Config | None = None,
+    client: AsyncAnthropic | None = None,
+) -> dict:
     if name == "create_todo":
         remind_at = None
         if inputs.get("remind_in_minutes") is not None:
             remind_at = datetime.now(timezone.utc) + timedelta(minutes=int(inputs["remind_in_minutes"]))
+            logger.info("create_todo: remind_in_minutes=%s → remind_at=%s", inputs["remind_in_minutes"], remind_at)
         elif inputs.get("remind_at"):
             remind_at = datetime.fromisoformat(inputs["remind_at"])
+            logger.info("create_todo: remind_at (parsed)=%s", remind_at)
+        logger.info("create_todo: calling database.create_todo | db=%s | chat_id=%d | title=%r | remind_at=%s", db_path, chat_id, inputs["title"], remind_at)
         tid = database.create_todo(db_path, chat_id, inputs["title"], remind_at)
+        logger.info("create_todo: database.create_todo returned id=%s", tid)
         if remind_at:
             sched.add_reminder(tid, chat_id, inputs["title"], remind_at)
         result: dict = {"ok": True, "id": tid}
