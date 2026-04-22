@@ -14,7 +14,7 @@ from scheduler import ReminderScheduler
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-haiku-4-5-20251001"
+MODEL = "claude-sonnet-4-5"
 _TZ = ZoneInfo("Europe/Berlin")
 
 # web_search_20250305 is a server-side tool — Anthropic executes it internally.
@@ -228,6 +228,10 @@ def _system_prompt(report_email: str = "") -> str:
     )
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%S") + tz_offset_iso
     return (
+        "CRITICAL RULE: You have tools available. You MUST call the appropriate tool whenever the user "
+        "asks you to save, create, or schedule anything. NEVER describe what you would do — always call "
+        "the tool immediately. Responding with plain text instead of a tool call when the user wants an "
+        "action taken is a failure.\n\n"
         f"You are a personal assistant. Heute ist {today_de}, {now.strftime('%H:%M')} Uhr (UTC-Offset: {tz_offset_iso}).\n"
         f"Aktuelle Zeit (ISO 8601): {now_iso}\n"
         f"Vorberechnete Daten — heute: {now.strftime('%Y-%m-%d')}, morgen: {tomorrow_iso}, übermorgen: {day_after_iso}.\n"
@@ -235,25 +239,18 @@ def _system_prompt(report_email: str = "") -> str:
         f"remind_in_minutes (e.g. 5 or 120) — the server computes the exact time. "
         f"For absolute times ('at 10:00', 'morgen um 9') use remind_at as a full ISO 8601 datetime "
         f"with UTC offset, e.g. {tomorrow_iso}T10:00:00{tz_offset_iso}.\n\n"
-        "You can:\n"
-        "- Manage to-dos and reminders: use create_todo to add tasks (pass remind_at for timed reminders), "
-        "list_todos to show open tasks, complete_todo to mark done\n"
-        "  - If the user wants a reminder, pass remind_at to create_todo — no separate reminder tool needed\n"
-        "  - ALWAYS call list_todos when the user asks for their todos or task list — never answer from memory or context\n"
-        "  - When presenting list_todos results: list EXACTLY the items in 'todos' — no additions, no omissions. "
-        "State the count as EXACTLY the 'count' field from the tool result. Never compute or guess the count yourself.\n"
-        "  - If the user says they completed a task, call list_todos if needed to find the id, then call complete_todo\n"
-        "  - IMPORTANT: when confirming a reminder or listing todos, always use the 'scheduled_for_display' "
-        "field from the tool result for the date string. Never compute or name weekdays yourself — "
-        "the weekday is derived server-side from the actual date.\n"
-        "- Research topics: use the research tool for web lookups and return the result as-is\n"
-        "- Save and retrieve notes: use save_note and search_notes\n"
-        "- Keep a personal journal: use save_journal for thoughts, ideas, observations, and reflections\n"
-        "  - Decide based on length and intent: short actionable items → save_note; longer thoughts/ideas/reflections → save_journal\n"
-        "  - Use search_journal when the user asks what they wrote about a topic or wants a summary of their thoughts\n"
-        "  - After saving a journal entry, confirm briefly: 'Notiz gespeichert ✓'\n"
-        f"- Send emails: use send_email with recipient, subject, and body.{email_hint}\n"
-        "- Hold a general conversation\n\n"
+        "Tools and when to call them (mandatory — use the tool, do not just talk about it):\n"
+        "- create_todo: call this for ANY request to remember, save, or be reminded of something. "
+        "Pass remind_in_minutes for relative times ('in 5 minutes' → 5), remind_at for absolute times.\n"
+        "- list_todos: call this ALWAYS when asked for todos/tasks — never answer from memory\n"
+        "  - List EXACTLY the items in 'todos', state count as EXACTLY the 'count' field from the result\n"
+        "- complete_todo: call when user says they finished a task; use list_todos first if you need the id\n"
+        "- save_note / search_notes: for short notes, references, follow-ups\n"
+        "- save_journal / search_journal: for longer thoughts, ideas, reflections\n"
+        "- research: for web lookups; return the result as-is\n"
+        f"- send_email: for sending emails.{email_hint}\n\n"
+        "When confirming a reminder, always use the 'scheduled_for_display' field from the tool result "
+        "for the time string — never compute or name weekdays or times yourself.\n"
         "Always confirm actions you take. Be concise and friendly."
     )
 
@@ -281,6 +278,10 @@ async def run(
     tools = _build_tools(now_iso, tomorrow_iso, tz_offset_iso)
 
     while True:
+        logger.info(
+            "Sending API request | model=%s | tools=%d | messages=%d | tool_names=%s",
+            MODEL, len(tools), len(messages), [t["name"] for t in tools],
+        )
         response = await client.messages.create(
             model=MODEL,
             max_tokens=2048,
