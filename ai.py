@@ -19,8 +19,8 @@ _TZ = ZoneInfo("Europe/Berlin")
 
 # web_search_20250305 is a server-side tool — Anthropic executes it internally.
 # The other three are client-side tools that this code executes.
-def _build_tools(tomorrow_iso: str, tz_offset: str) -> list:
-    """Return the tool list with a fresh example date for remind_at."""
+def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
+    """Return the tool list with a fresh example date/time for remind_at."""
     return [
     {
         "name": "create_todo",
@@ -40,11 +40,13 @@ def _build_tools(tomorrow_iso: str, tz_offset: str) -> list:
                     "type": "string",
                     "description": (
                         f"ISO 8601 datetime with UTC offset for when to send a reminder. "
+                        f"The current date/time is {now_iso}. "
                         f"Example for tomorrow at 10:00: {tomorrow_iso}T10:00:00{tz_offset}. "
                         "Always include the UTC offset. "
-                        "IMPORTANT: Use ONLY the pre-resolved dates from the system prompt "
-                        "(heute/today, morgen/tomorrow, übermorgen). "
-                        "Never compute or guess dates yourself. "
+                        "For relative expressions ('in 5 minutes', 'in 2 hours'), add exactly "
+                        f"that duration to the current datetime ({now_iso}). "
+                        "For day-relative expressions (heute, morgen, übermorgen), use the "
+                        "pre-resolved dates from the system prompt. "
                         "Omit entirely if no reminder is needed."
                     ),
                 },
@@ -219,12 +221,15 @@ def _system_prompt(report_email: str = "") -> str:
         if report_email
         else ""
     )
+    now_iso = now.strftime("%Y-%m-%dT%H:%M:%S") + tz_offset_iso
     return (
-        f"You are a personal assistant. Heute ist {today_de} (UTC-Offset: {tz_offset_iso}).\n"
+        f"You are a personal assistant. Heute ist {today_de}, {now.strftime('%H:%M')} Uhr (UTC-Offset: {tz_offset_iso}).\n"
+        f"Aktuelle Zeit (ISO 8601): {now_iso}\n"
         f"Vorberechnete Daten — heute: {now.strftime('%Y-%m-%d')}, morgen: {tomorrow_iso}, übermorgen: {day_after_iso}.\n"
-        f"When creating reminders, always resolve relative day references (morgen, tomorrow, etc.) "
-        f"to the concrete date from the list above. remind_at must always be a full ISO 8601 "
-        f"datetime with UTC offset, e.g. {tomorrow_iso}T10:00:00{tz_offset_iso}.\n\n"
+        f"When creating reminders: for relative expressions ('in 5 minutes', 'in 2 hours') add that "
+        f"duration to the current datetime ({now_iso}). For day references (heute/morgen/übermorgen) "
+        f"use the pre-resolved dates above. remind_at must always be a full ISO 8601 datetime with "
+        f"UTC offset, e.g. {tomorrow_iso}T10:00:00{tz_offset_iso}.\n\n"
         "You can:\n"
         "- Manage to-dos and reminders: use create_todo to add tasks (pass remind_at for timed reminders), "
         "list_todos to show open tasks, complete_todo to mark done\n"
@@ -266,8 +271,9 @@ async def run(
     now = datetime.now(_TZ)
     tz_offset = now.strftime("%z")
     tz_offset_iso = tz_offset[:3] + ":" + tz_offset[3:]
+    now_iso = now.strftime("%Y-%m-%dT%H:%M:%S") + tz_offset_iso
     tomorrow_iso = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-    tools = _build_tools(tomorrow_iso, tz_offset_iso)
+    tools = _build_tools(now_iso, tomorrow_iso, tz_offset_iso)
 
     while True:
         response = await client.messages.create(
