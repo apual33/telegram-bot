@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/telegram-bot
+ExecStart=/root/telegram-bot/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=/root/telegram-bot/.env
+
+[Install]
+WantedBy=multi-user.target

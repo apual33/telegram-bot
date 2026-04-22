@@ -1,0 +1,84 @@
+import logging
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+
+import database
+
+_TZ = ZoneInfo("Europe/Berlin")
+logger = logging.getLogger(__name__)
+
+
+class ReminderScheduler:
+    def __init__(self, bot: Bot, db_path: str) -> None:
+        self._bot = bot
+        self._db_path = db_path
+        self._scheduler = AsyncIOScheduler()
+
+    def start(self) -> None:
+        self._scheduler.start()
+
+    def stop(self) -> None:
+        self._scheduler.shutdown(wait=False)
+
+    def add_reminder(self, todo_id: int, chat_id: int, title: str, run_at: datetime) -> None:
+        if run_at.tzinfo is None:
+            run_at = run_at.replace(tzinfo=timezone.utc)
+        self._scheduler.add_job(
+            self._fire,
+            trigger="date",
+            run_date=run_at,
+            args=[todo_id, chat_id, title],
+            id=f"reminder_{todo_id}",
+            replace_existing=True,
+        )
+        logger.info("Scheduled reminder for todo %d at %s", todo_id, run_at)
+
+    def add_daily_digest(self, chat_id: int, db_path: str) -> None:
+        self._scheduler.add_job(
+            self._send_daily_digest,
+            trigger="cron",
+            hour=8,
+            minute=0,
+            timezone=_TZ,
+            args=[chat_id, db_path],
+            id="daily_digest",
+            replace_existing=True,
+        )
+        logger.info("Scheduled daily digest for chat %d at 08:00 Europe/Berlin", chat_id)
+
+    async def _send_daily_digest(self, chat_id: int, db_path: str) -> None:
+        todos = database.list_open_todos(db_path, chat_id)
+        if not todos:
+            await self._bot.send_message(chat_id=chat_id, text="✅ Keine offenen To-Dos — guten Morgen!")
+            return
+
+        lines = ["📋 *Deine offenen To-Dos:*"]
+        for todo in todos:
+            if todo["remind_at"]:
+                run_at = datetime.fromisoformat(todo["remind_at"]).replace(tzinfo=timezone.utc)
+                label = run_at.astimezone(_TZ).strftime("%d.%m. %H:%M")
+                lines.append(f"• {todo['title']} (⏰ {label})")
+            else:
+                lines.append(f"• {todo['title']}")
+
+        await self._bot.send_message(
+            chat_id=chat_id,
+            text="\n".join(lines),
+            parse_mode="Markdown",
+        )
+
+    async def _fire(self, todo_id: int, chat_id: int, title: str) -> None:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Done ✓", callback_data=f"done:{todo_id}"),
+            InlineKeyboardButton("Not yet", callback_data=f"notyet:{todo_id}"),
+        ]])
+        await self._bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ *Reminder:* {title}",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+        database.mark_reminded(self._db_path, todo_id)

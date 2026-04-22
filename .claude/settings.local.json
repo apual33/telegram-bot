@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /Users/pierrealdag/telegram-bot/.venv/bin/python*)",
+      "Bash(python -m py_compile database.py bot.py)",
+      "Bash(python3 -m py_compile database.py bot.py)",
+      "Bash(python3 -m py_compile database.py)",
+      "Bash(.venv/bin/pip show:*)",
+      "Bash(.venv/bin/pip list:*)",
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(.venv/bin/python -m py_compile config.py research.py bot.py)",
+      "Bash(ls /Users/pierrealdag/telegram-bot/*.db)",
+      "Bash(sqlite3:*)",
+      "Read(//Users/pierrealdag/**)",
+      "Bash(.venv/bin/python -c \"import database; database.init_db\\('bot.db'\\); print\\('Tables:', __import__\\('sqlite3'\\).connect\\('bot.db'\\).execute\\(\\\\\"SELECT name FROM sqlite_master WHERE type='table'\\\\\"\\).fetchall\\(\\)\\)\")",
+      "Bash(.venv/bin/python migrate.py)",
+      "Bash(.venv/bin/python -c \"import ai, bot, scheduler; print\\('All modules import OK'\\)\")"
+    ]
+  }
+}
