@@ -61,7 +61,7 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
     },
     {
         "name": "save_note",
-        "description": "Save a note, task, follow-up, or reference for the user.",
+        "description": "Save any text the user wants to store: notes, thoughts, ideas, reflections, follow-ups, references, or tasks.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -69,7 +69,7 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
                 "type": {
                     "type": "string",
                     "enum": ["note", "followup", "reference", "task"],
-                    "description": "Category for this entry.",
+                    "description": "Category: 'note' for general thoughts/ideas/reflections, 'followup' for follow-ups, 'reference' for links/references, 'task' for actionable items.",
                 },
             },
             "required": ["content", "type"],
@@ -77,7 +77,7 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
     },
     {
         "name": "search_notes",
-        "description": "Search the user's saved notes, tasks, and references.",
+        "description": "Search the user's saved notes, thoughts, tasks, and references.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -152,49 +152,6 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
         },
     },
     {
-        "name": "save_journal",
-        "description": (
-            "Save a journal entry — a thought, idea, observation, or reflection from the user. "
-            "Use this for longer, reflective content. "
-            "For short actionable items (tasks, follow-ups, references) use save_note instead."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The full text of the journal entry.",
-                },
-            },
-            "required": ["content"],
-        },
-    },
-    {
-        "name": "search_journal",
-        "description": (
-            "Search the user's journal entries using semantic similarity. "
-            "Use when the user asks what they wrote about a topic, or asks for a summary of their thoughts on something. "
-            "Optionally filter to a recent time window."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The topic or question to search for.",
-                },
-                "since_days": {
-                    "type": "integer",
-                    "description": (
-                        "Only search entries from the last N days. "
-                        "Use 7 for 'last week', 30 for 'last month'. Omit to search all entries."
-                    ),
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    {
         "name": "send_email",
         "description": (
             "Send an email on behalf of the user via their configured Gmail account. "
@@ -221,7 +178,7 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
     },
 ]  # end of _build_tools return value
 
-_CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "snooze_todo", "save_note", "search_notes", "research", "save_journal", "search_journal", "send_email"}
+_CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "snooze_todo", "save_note", "search_notes", "research", "send_email"}
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
@@ -278,7 +235,7 @@ def _system_prompt(report_email: str = "") -> str:
         "When they choose 'verschieben' (or specify a duration), call snooze_todo with the id and minutes. "
         "When they choose 'löschen', call complete_todo with the id.\n"
         "- save_note / search_notes: for short notes, references, follow-ups\n"
-        "- save_journal / search_journal: for longer thoughts, ideas, reflections\n"
+        "- save_note / search_notes: for notes, thoughts, ideas, reflections, references, follow-ups\n"
         "- research: for web lookups; return the result as-is\n"
         f"- send_email: for sending emails.{email_hint}\n\n"
         "When confirming a reminder, always use the 'scheduled_for_display' field from the tool result "
@@ -445,21 +402,6 @@ async def _execute_inner(
         new_dt = datetime.fromisoformat(result["remind_at"]).replace(tzinfo=timezone.utc)
         sched.add_reminder(inputs["todo_id"], chat_id, result["title"], new_dt)
         return {"ok": True, "scheduled_for_display": _fmt_berlin(new_dt)}
-
-    if name == "save_journal":
-        import embeddings as emb_module
-        vec = await emb_module.encode(inputs["content"], client)
-        jid = database.save_journal_entry(db_path, chat_id, inputs["content"], vec)
-        return {"ok": True, "id": jid}
-
-    if name == "search_journal":
-        import embeddings as emb_module
-        since_days = inputs.get("since_days")
-        entries = database.get_journal_entries(db_path, chat_id, since_days=since_days)
-        if not entries:
-            return {"results": [], "count": 0}
-        results = await emb_module.top_k(inputs["query"], entries, client, k=5)
-        return {"results": results, "count": len(results)}
 
     if name == "research":
         import httpx

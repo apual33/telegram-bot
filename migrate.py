@@ -110,5 +110,52 @@ def migrate() -> None:
         print(f"  [{r['id']}] {r['title']!r}  done={r['done']} reminded={r['reminded']}{remind}")
 
 
+def migrate_journal_to_notes() -> None:
+    """
+    Migration: consolidate journal into notes.
+    - Backs up bot.db to bot.db.backup
+    - Copies all journal rows into notes with type='note'
+    - Drops the journal table
+    """
+    if not DB.exists():
+        print(f"ERROR: {DB} not found.")
+        return
+
+    shutil.copy2(DB, BACKUP)
+    print(f"Backed up {DB} → {BACKUP}")
+
+    with sqlite3.connect(DB) as con:
+        con.row_factory = sqlite3.Row
+
+        existing = {
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+
+        if "journal" not in existing:
+            print("journal table does not exist — nothing to migrate.")
+            return
+
+        rows = con.execute(
+            "SELECT chat_id, content, created_at FROM journal"
+        ).fetchall()
+        print(f"  journal: {len(rows)} rows to migrate")
+
+        for r in rows:
+            con.execute(
+                "INSERT INTO notes (chat_id, content, type, created_at) VALUES (?, ?, 'note', ?)",
+                (r["chat_id"], r["content"], r["created_at"]),
+            )
+
+        con.execute("DROP TABLE journal")
+        con.commit()
+
+    with sqlite3.connect(DB) as con:
+        count = con.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+    print(f"Done — notes table now has {count} rows. journal table dropped.")
+
+
 if __name__ == "__main__":
-    migrate()
+    migrate_journal_to_notes()

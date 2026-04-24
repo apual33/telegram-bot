@@ -1,4 +1,3 @@
-import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -32,15 +31,6 @@ def init_db(db_path: str) -> None:
                 chat_id    INTEGER NOT NULL,
                 role       TEXT    NOT NULL,
                 content    TEXT    NOT NULL,
-                created_at TEXT    NOT NULL DEFAULT (datetime('now'))
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS journal (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id    INTEGER NOT NULL,
-                content    TEXT    NOT NULL,
-                embedding  TEXT    NOT NULL,
                 created_at TEXT    NOT NULL DEFAULT (datetime('now'))
             )
         """)
@@ -89,7 +79,7 @@ def list_open_todos(db_path: str, chat_id: int) -> list[dict]:
             SELECT id, title, created_at, remind_at
             FROM todos
             WHERE chat_id = ? AND done = 0
-            ORDER BY created_at ASC
+            ORDER BY remind_at IS NOT NULL, remind_at ASC, created_at ASC
             """,
             (chat_id,),
         ).fetchall()
@@ -160,35 +150,6 @@ def search_notes(db_path: str, chat_id: int, query: str) -> list[dict]:
             "ORDER BY created_at DESC LIMIT 10",
             (chat_id, f"%{query}%"),
         ).fetchall()
-        return [dict(r) for r in rows]
-
-
-# ── Journal ───────────────────────────────────────────────────────────────────
-
-def save_journal_entry(db_path: str, chat_id: int, content: str, embedding: list) -> int:
-    with _conn(db_path) as con:
-        cur = con.execute(
-            "INSERT INTO journal (chat_id, content, embedding) VALUES (?, ?, ?)",
-            (chat_id, content, json.dumps(embedding)),
-        )
-        return cur.lastrowid
-
-
-def get_journal_entries(db_path: str, chat_id: int, since_days: int | None = None) -> list[dict]:
-    with _conn(db_path) as con:
-        if since_days is not None:
-            rows = con.execute(
-                "SELECT id, content, embedding, created_at FROM journal "
-                "WHERE chat_id = ? AND created_at >= datetime('now', ?) "
-                "ORDER BY created_at DESC",
-                (chat_id, f"-{since_days} days"),
-            ).fetchall()
-        else:
-            rows = con.execute(
-                "SELECT id, content, embedding, created_at FROM journal "
-                "WHERE chat_id = ? ORDER BY created_at DESC",
-                (chat_id,),
-            ).fetchall()
         return [dict(r) for r in rows]
 
 
