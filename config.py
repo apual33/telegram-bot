@@ -18,6 +18,7 @@ class Config:
     report_email: str = ""
     telegram_chat_id: int = 0  # owner chat_id for proactive messages (daily digest)
     serper_api_key: str = ""
+    voyage_api_key: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -32,4 +33,5 @@ class Config:
             report_email=os.getenv("REPORT_EMAIL", ""),
             telegram_chat_id=int(os.getenv("TELEGRAM_CHAT_ID", "0")),
             serper_api_key=os.getenv("SERPER_API_KEY", ""),
+            voyage_api_key=os.getenv("VOYAGE_API_KEY", ""),
         )

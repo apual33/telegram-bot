@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import smtplib
@@ -184,13 +185,11 @@ _CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "snooze_todo", "s
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 
-async def _embed(text: str, client: AsyncAnthropic, input_type: str = "document") -> list[float]:
-    response = await client.beta.embeddings.create(
-        model=_EMBED_MODEL,
-        input=[text],
-        input_type=input_type,
-    )
-    return response.embeddings[0].embedding
+async def _embed(text: str, voyage_api_key: str, input_type: str = "document") -> list[float]:
+    import voyageai
+    vo = voyageai.Client(api_key=voyage_api_key)
+    result = await asyncio.to_thread(vo.embed, [text], model=_EMBED_MODEL, input_type=input_type)
+    return result.embeddings[0]
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -203,15 +202,18 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-async def backfill_note_embeddings(db_path: str, client: AsyncAnthropic) -> None:
+async def backfill_note_embeddings(db_path: str, voyage_api_key: str) -> None:
     """Generate and store embeddings for all notes that don't have one yet."""
+    if not voyage_api_key:
+        logger.warning("VOYAGE_API_KEY not set — skipping embedding backfill")
+        return
     notes = database.get_notes_without_embeddings(db_path)
     if not notes:
         return
     logger.info("Backfilling embeddings for %d note(s)…", len(notes))
     for note in notes:
         try:
-            vec = await _embed(note["content"], client, input_type="document")
+            vec = await _embed(note["content"], voyage_api_key, input_type="document")
             database.update_note_embedding(db_path, note["id"], vec)
         except Exception:
             logger.exception("Failed to embed note id=%s during backfill", note["id"])
@@ -410,32 +412,34 @@ async def _execute_inner(
         return result
 
     if name == "save_note":
-        try:
-            vec = await _embed(inputs["content"], client, input_type="document")
-        except Exception:
-            logger.warning("Failed to generate embedding for note — saving without")
-            vec = None
+        vec = None
+        if config and config.voyage_api_key:
+            try:
+                vec = await _embed(inputs["content"], config.voyage_api_key, input_type="document")
+            except Exception:
+                logger.warning("Failed to generate embedding for note — saving without")
         nid = database.save_note(db_path, chat_id, inputs["content"], inputs["type"], embedding=vec)
         return {"ok": True, "id": nid}
 
     if name == "search_notes":
         query = inputs["query"]
-        try:
-            query_vec = await _embed(query, client, input_type="query")
-            notes = database.get_notes_with_embeddings(db_path, chat_id)
-            if notes:
-                scored = sorted(
-                    notes,
-                    key=lambda n: _cosine_similarity(query_vec, json.loads(n["embedding"])),
-                    reverse=True,
-                )
-                results = [
-                    {k: v for k, v in n.items() if k != "embedding"}
-                    for n in scored[:5]
-                ]
-                return {"results": results, "count": len(results)}
-        except Exception:
-            logger.warning("Semantic search failed, falling back to text search")
+        if config and config.voyage_api_key:
+            try:
+                query_vec = await _embed(query, config.voyage_api_key, input_type="query")
+                notes = database.get_notes_with_embeddings(db_path, chat_id)
+                if notes:
+                    scored = sorted(
+                        notes,
+                        key=lambda n: _cosine_similarity(query_vec, json.loads(n["embedding"])),
+                        reverse=True,
+                    )
+                    results = [
+                        {k: v for k, v in n.items() if k != "embedding"}
+                        for n in scored[:5]
+                    ]
+                    return {"results": results, "count": len(results)}
+            except Exception:
+                logger.warning("Semantic search failed, falling back to text search")
         results = database.search_notes_text(db_path, chat_id, query)
         return {"results": results, "count": len(results)}
 
