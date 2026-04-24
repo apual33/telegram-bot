@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,11 @@ def init_db(db_path: str) -> None:
                 created_at TEXT    NOT NULL DEFAULT (datetime('now'))
             )
         """)
+        # Add embedding column to notes if not present (idempotent)
+        try:
+            conn.execute("ALTER TABLE notes ADD COLUMN embedding TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.commit()
 
 
@@ -133,16 +139,46 @@ def snooze_todo(db_path: str, todo_id: int, minutes: int) -> dict | None:
 
 # ── Notes ─────────────────────────────────────────────────────────────────────
 
-def save_note(db_path: str, chat_id: int, content: str, note_type: str) -> int:
+def save_note(db_path: str, chat_id: int, content: str, note_type: str, embedding: list | None = None) -> int:
+    embedding_str = json.dumps(embedding) if embedding is not None else None
     with _conn(db_path) as con:
         cur = con.execute(
-            "INSERT INTO notes (chat_id, content, type) VALUES (?, ?, ?)",
-            (chat_id, content, note_type),
+            "INSERT INTO notes (chat_id, content, type, embedding) VALUES (?, ?, ?, ?)",
+            (chat_id, content, note_type, embedding_str),
         )
         return cur.lastrowid
 
 
-def search_notes(db_path: str, chat_id: int, query: str) -> list[dict]:
+def get_notes_with_embeddings(db_path: str, chat_id: int) -> list[dict]:
+    """Return all notes that have a stored embedding."""
+    with _conn(db_path) as con:
+        rows = con.execute(
+            "SELECT id, content, type, created_at, embedding FROM notes "
+            "WHERE chat_id = ? AND embedding IS NOT NULL",
+            (chat_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_notes_without_embeddings(db_path: str) -> list[dict]:
+    """Return all notes lacking an embedding, for backfill."""
+    with _conn(db_path) as con:
+        rows = con.execute(
+            "SELECT id, chat_id, content FROM notes WHERE embedding IS NULL"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_note_embedding(db_path: str, note_id: int, embedding: list) -> None:
+    with _conn(db_path) as con:
+        con.execute(
+            "UPDATE notes SET embedding = ? WHERE id = ?",
+            (json.dumps(embedding), note_id),
+        )
+
+
+def search_notes_text(db_path: str, chat_id: int, query: str) -> list[dict]:
+    """LIKE-based text search fallback."""
     with _conn(db_path) as con:
         rows = con.execute(
             "SELECT id, content, type, created_at FROM notes "
@@ -151,6 +187,10 @@ def search_notes(db_path: str, chat_id: int, query: str) -> list[dict]:
             (chat_id, f"%{query}%"),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+# Keep the old name as an alias so nothing else breaks
+search_notes = search_notes_text
 
 
 # ── History ───────────────────────────────────────────────────────────────────

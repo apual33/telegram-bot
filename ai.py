@@ -15,6 +15,7 @@ from scheduler import ReminderScheduler
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-5"
+_EMBED_MODEL = "voyage-3"
 _TZ = ZoneInfo("Europe/Berlin")
 
 # web_search_20250305 is a server-side tool — Anthropic executes it internally.
@@ -181,6 +182,40 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
 _CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "snooze_todo", "save_note", "search_notes", "research", "send_email"}
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
+
+async def _embed(text: str, client: AsyncAnthropic, input_type: str = "document") -> list[float]:
+    response = await client.beta.embeddings.create(
+        model=_EMBED_MODEL,
+        input=[text],
+        input_type=input_type,
+    )
+    return response.embeddings[0].embedding
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    import math
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+async def backfill_note_embeddings(db_path: str, client: AsyncAnthropic) -> None:
+    """Generate and store embeddings for all notes that don't have one yet."""
+    notes = database.get_notes_without_embeddings(db_path)
+    if not notes:
+        return
+    logger.info("Backfilling embeddings for %d note(s)…", len(notes))
+    for note in notes:
+        try:
+            vec = await _embed(note["content"], client, input_type="document")
+            database.update_note_embedding(db_path, note["id"], vec)
+        except Exception:
+            logger.exception("Failed to embed note id=%s during backfill", note["id"])
+    logger.info("Embedding backfill complete")
 
 
 def _fmt_berlin(dt: datetime) -> str:
@@ -375,11 +410,33 @@ async def _execute_inner(
         return result
 
     if name == "save_note":
-        nid = database.save_note(db_path, chat_id, inputs["content"], inputs["type"])
+        try:
+            vec = await _embed(inputs["content"], client, input_type="document")
+        except Exception:
+            logger.warning("Failed to generate embedding for note — saving without")
+            vec = None
+        nid = database.save_note(db_path, chat_id, inputs["content"], inputs["type"], embedding=vec)
         return {"ok": True, "id": nid}
 
     if name == "search_notes":
-        results = database.search_notes(db_path, chat_id, inputs["query"])
+        query = inputs["query"]
+        try:
+            query_vec = await _embed(query, client, input_type="query")
+            notes = database.get_notes_with_embeddings(db_path, chat_id)
+            if notes:
+                scored = sorted(
+                    notes,
+                    key=lambda n: _cosine_similarity(query_vec, json.loads(n["embedding"])),
+                    reverse=True,
+                )
+                results = [
+                    {k: v for k, v in n.items() if k != "embedding"}
+                    for n in scored[:5]
+                ]
+                return {"results": results, "count": len(results)}
+        except Exception:
+            logger.warning("Semantic search failed, falling back to text search")
+        results = database.search_notes_text(db_path, chat_id, query)
         return {"results": results, "count": len(results)}
 
     if name == "list_todos":

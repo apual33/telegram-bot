@@ -174,6 +174,10 @@ async def _post_init(app: Application) -> None:
     if config.telegram_chat_id:
         sched.add_daily_digest(config.telegram_chat_id, config.db_path)
 
+    # Backfill embeddings for existing notes in the background
+    anthropic_client = app.bot_data["anthropic_client"]
+    asyncio.create_task(ai.backfill_note_embeddings(config.db_path, anthropic_client))
+
 
 async def _post_shutdown(app: Application) -> None:
     sched: ReminderScheduler | None = app.bot_data.get("scheduler")
