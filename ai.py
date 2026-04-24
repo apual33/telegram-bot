@@ -423,24 +423,32 @@ async def _execute_inner(
 
     if name == "search_notes":
         query = inputs["query"]
+        logger.info("search_notes | chat_id=%d | query=%r | voyage_key_set=%s", chat_id, query, bool(config and config.voyage_api_key))
         if config and config.voyage_api_key:
             try:
                 query_vec = await _embed(query, config.voyage_api_key, input_type="query")
+                logger.info("search_notes | query embedding generated | dims=%d", len(query_vec))
                 notes = database.get_notes_with_embeddings(db_path, chat_id)
+                logger.info("search_notes | notes with embeddings for chat_id=%d: %d", chat_id, len(notes))
                 if notes:
                     scored = sorted(
                         notes,
                         key=lambda n: _cosine_similarity(query_vec, json.loads(n["embedding"])),
                         reverse=True,
                     )
+                    top_scores = [(round(_cosine_similarity(query_vec, json.loads(n["embedding"])), 4), n["id"]) for n in scored[:5]]
+                    logger.info("search_notes | top scores (score, id): %s", top_scores)
                     results = [
                         {k: v for k, v in n.items() if k != "embedding"}
                         for n in scored[:5]
                     ]
                     return {"results": results, "count": len(results)}
+                else:
+                    logger.warning("search_notes | no notes with embeddings found for chat_id=%d — falling back", chat_id)
             except Exception:
-                logger.warning("Semantic search failed, falling back to text search")
+                logger.exception("search_notes | semantic search failed — falling back to text search")
         results = database.search_notes_text(db_path, chat_id, query)
+        logger.info("search_notes | text search fallback returned %d result(s)", len(results))
         return {"results": results, "count": len(results)}
 
     if name == "list_todos":
