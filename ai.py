@@ -268,7 +268,7 @@ def _system_prompt(report_email: str = "") -> str:
         "- create_todo: call this for ANY request to remember, save, or be reminded of something. "
         "Pass remind_in_minutes for relative times ('in 5 minutes' → 5), remind_at for absolute times.\n"
         "- list_todos: call this ALWAYS when asked for todos/tasks — never answer from memory\n"
-        "  - List EXACTLY the items in 'todos', state count as EXACTLY the 'count' field from the result\n"
+        "  - The result contains a 'formatted' field — output it EXACTLY as-is, word for word. Do not reformat, reorder, or recount.\n"
         "- complete_todo: call when user says they finished a task; use list_todos first if you need the id. "
         "The result contains 'title' — always repeat this exact title in your confirmation ('Habe \\'X\\' als erledigt markiert ✓')\n"
         "- snooze_todo: call when user replies to a reminder with 'verschieben', 'später', 'nicht jetzt', "
@@ -458,12 +458,9 @@ async def _execute_inner(
 
     if name == "list_todos":
         todos = database.list_open_todos(db_path, chat_id)
-        for todo in todos:
-            if todo.get("remind_at"):
-                todo["scheduled_for_display"] = _fmt_berlin(
-                    datetime.fromisoformat(todo["remind_at"]).replace(tzinfo=timezone.utc)
-                )
-        return {"todos": todos, "count": len(todos)}
+        if not todos:
+            return {"count": 0, "formatted": "✅ Keine offenen To-Dos."}
+        return {"count": len(todos), "formatted": database.format_todo_list(todos)}
 
     if name == "complete_todo":
         todo = database.complete_todo(db_path, inputs["todo_id"])

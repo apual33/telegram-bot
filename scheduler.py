@@ -55,18 +55,9 @@ class ReminderScheduler:
             await self._bot.send_message(chat_id=chat_id, text="✅ Keine offenen To-Dos — guten Morgen!")
             return
 
-        lines = ["📋 *Deine offenen To-Dos:*"]
-        for todo in todos:
-            if todo["remind_at"]:
-                run_at = datetime.fromisoformat(todo["remind_at"]).replace(tzinfo=timezone.utc)
-                label = run_at.astimezone(_TZ).strftime("%d.%m. %H:%M")
-                lines.append(f"• {todo['title']} (⏰ {label})")
-            else:
-                lines.append(f"• {todo['title']}")
-
         await self._bot.send_message(
             chat_id=chat_id,
-            text="\n".join(lines),
+            text=database.format_todo_list(todos),
             parse_mode="Markdown",
         )
 

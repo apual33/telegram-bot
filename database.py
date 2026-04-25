@@ -1,7 +1,14 @@
 import json
 import sqlite3
+from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+_TZ = ZoneInfo("Europe/Berlin")
+_DE_WEEKDAYS = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+_DE_MONTHS = ["Januar", "Februar", "März", "April", "Mai", "Juni",
+               "Juli", "August", "September", "Oktober", "November", "Dezember"]
 
 
 def init_db(db_path: str) -> None:
@@ -194,6 +201,38 @@ def search_notes_text(db_path: str, chat_id: int, query: str) -> list[dict]:
 
 # Keep the old name as an alias so nothing else breaks
 search_notes = search_notes_text
+
+
+# ── Formatting ────────────────────────────────────────────────────────────────
+
+def format_todo_list(todos: list[dict]) -> str:
+    """Return a Markdown-formatted, date-grouped todo list in German."""
+    count = len(todos)
+    lines = [f"📋 *{count} offene To-Do{'s' if count != 1 else ''}*"]
+
+    no_date = [t for t in todos if not t.get("remind_at")]
+    with_date = [t for t in todos if t.get("remind_at")]
+
+    if no_date:
+        lines.append("")
+        lines.append("📌 *Ohne Termin*")
+        for t in no_date:
+            lines.append(f"• {t['title']}")
+
+    by_date: dict = defaultdict(list)
+    for t in with_date:
+        dt = datetime.fromisoformat(t["remind_at"]).replace(tzinfo=timezone.utc).astimezone(_TZ)
+        by_date[dt.date()].append((dt, t))
+
+    for date_key in sorted(by_date):
+        weekday = _DE_WEEKDAYS[date_key.weekday()]
+        month = _DE_MONTHS[date_key.month - 1]
+        lines.append("")
+        lines.append(f"📅 *{weekday}, {date_key.day}. {month}*")
+        for dt, t in sorted(by_date[date_key], key=lambda x: x[0]):
+            lines.append(f"• {t['title']} [{dt.strftime('%H:%M')}]")
+
+    return "\n".join(lines)
 
 
 # ── History ───────────────────────────────────────────────────────────────────
