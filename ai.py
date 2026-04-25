@@ -114,7 +114,11 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
     },
     {
         "name": "complete_todo",
-        "description": "Mark a to-do as done. Call list_todos first if you do not know the id.",
+        "description": (
+            "Mark a to-do as done. Call list_todos first if you do not know the id. "
+            "The result includes the 'title' of what was actually marked done — always "
+            "confirm this exact title back to the user so they can catch any mistakes."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -265,7 +269,8 @@ def _system_prompt(report_email: str = "") -> str:
         "Pass remind_in_minutes for relative times ('in 5 minutes' → 5), remind_at for absolute times.\n"
         "- list_todos: call this ALWAYS when asked for todos/tasks — never answer from memory\n"
         "  - List EXACTLY the items in 'todos', state count as EXACTLY the 'count' field from the result\n"
-        "- complete_todo: call when user says they finished a task; use list_todos first if you need the id\n"
+        "- complete_todo: call when user says they finished a task; use list_todos first if you need the id. "
+        "The result contains 'title' — always repeat this exact title in your confirmation ('Habe \\'X\\' als erledigt markiert ✓')\n"
         "- snooze_todo: call when user replies to a reminder with 'verschieben', 'später', 'nicht jetzt', "
         "'noch nicht', or similar. Read the todo_id from [todo_id:X] in the reminder message in history. "
         "When the user says this, first reply offering two options: 'Verschieben' and 'Löschen'. "
@@ -461,8 +466,13 @@ async def _execute_inner(
         return {"todos": todos, "count": len(todos)}
 
     if name == "complete_todo":
-        updated = database.complete_todo(db_path, inputs["todo_id"])
-        return {"ok": updated}
+        todo = database.complete_todo(db_path, inputs["todo_id"])
+        if todo:
+            logger.info("complete_todo | marked done | id=%d | title=%r", todo["id"], todo["title"])
+            return {"ok": True, "id": todo["id"], "title": todo["title"]}
+        else:
+            logger.warning("complete_todo | not found or already done | id=%d", inputs["todo_id"])
+            return {"ok": False, "error": f"Todo {inputs['todo_id']} not found or already done"}
 
     if name == "snooze_todo":
         result = database.snooze_todo(db_path, inputs["todo_id"], inputs["minutes"])

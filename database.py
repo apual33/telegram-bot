@@ -92,13 +92,16 @@ def list_open_todos(db_path: str, chat_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def complete_todo(db_path: str, todo_id: int) -> bool:
+def complete_todo(db_path: str, todo_id: int) -> dict | None:
+    """Mark todo as done. Returns {'id', 'title'} on success, None if not found or already done."""
     with _conn(db_path) as con:
-        cur = con.execute(
-            "UPDATE todos SET done = 1 WHERE id = ? AND done = 0",
-            (todo_id,),
-        )
-        return cur.rowcount > 0
+        row = con.execute(
+            "SELECT title FROM todos WHERE id = ? AND done = 0", (todo_id,)
+        ).fetchone()
+        if not row:
+            return None
+        con.execute("UPDATE todos SET done = 1 WHERE id = ?", (todo_id,))
+        return {"id": todo_id, "title": row["title"]}
 
 
 def get_due_reminders(db_path: str) -> list[dict]:
