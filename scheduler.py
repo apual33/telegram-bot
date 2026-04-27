@@ -36,6 +36,12 @@ class ReminderScheduler:
         )
         logger.info("Scheduled reminder for todo %d at %s", todo_id, run_at)
 
+    def remove_reminder(self, todo_id: int) -> None:
+        job_id = f"reminder_{todo_id}"
+        if self._scheduler.get_job(job_id):
+            self._scheduler.remove_job(job_id)
+            logger.info("Cancelled reminder for todo %d", todo_id)
+
     def add_daily_digest(self, chat_id: int, db_path: str) -> None:
         self._scheduler.add_job(
             self._send_daily_digest,

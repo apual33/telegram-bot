@@ -472,13 +472,15 @@ async def _execute_inner(
         }
 
     if name == "complete_todo":
-        todo = database.complete_todo(db_path, inputs["todo_id"])
+        todo_id = inputs["todo_id"]
+        todo = database.complete_todo(db_path, todo_id)
         if todo:
             logger.info("complete_todo | marked done | id=%d | title=%r", todo["id"], todo["title"])
+            sched.remove_reminder(todo_id)
             return {"ok": True, "id": todo["id"], "title": todo["title"]}
         else:
-            logger.warning("complete_todo | not found or already done | id=%d", inputs["todo_id"])
-            return {"ok": False, "error": f"Todo {inputs['todo_id']} not found or already done"}
+            logger.warning("complete_todo | not found or already done | id=%d", todo_id)
+            return {"ok": False, "error": f"Todo {todo_id} not found or already done"}
 
     if name == "snooze_todo":
         result = database.snooze_todo(db_path, inputs["todo_id"], inputs["minutes"])
