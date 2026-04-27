@@ -115,8 +115,10 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
     {
         "name": "complete_todo",
         "description": (
-            "Mark a to-do as done. Call list_todos first if you do not know the id. "
-            "The result includes the 'title' of what was actually marked done — always "
+            "Mark a to-do as done. You MUST call list_todos first to get the current IDs — "
+            "never guess or invent an id. Pick the correct id from the 'todos' list in the "
+            "list_todos response using semantic understanding, then call this tool with that "
+            "exact id. The result includes the 'title' of what was marked done — always "
             "confirm this exact title back to the user so they can catch any mistakes."
         ),
         "input_schema": {
@@ -269,7 +271,10 @@ def _system_prompt(report_email: str = "") -> str:
         "Pass remind_in_minutes for relative times ('in 5 minutes' → 5), remind_at for absolute times.\n"
         "- list_todos: call this ALWAYS when asked for todos/tasks — never answer from memory\n"
         "  - The result contains a 'formatted' field — output it EXACTLY as-is, word for word. Do not reformat, reorder, or recount.\n"
-        "- complete_todo: call when user says they finished a task; use list_todos first if you need the id. "
+        "- complete_todo: call when user says they finished a task. "
+        "ALWAYS call list_todos first to get current IDs — never guess an ID. "
+        "Pick the correct id from the 'todos' list in the list_todos result using semantic understanding, "
+        "then call complete_todo with that exact id. "
         "The result contains 'title' — always repeat this exact title in your confirmation ('Habe \\'X\\' als erledigt markiert ✓')\n"
         "- snooze_todo: call when user replies to a reminder with 'verschieben', 'später', 'nicht jetzt', "
         "'noch nicht', or similar. Read the todo_id from [todo_id:X] in the reminder message in history. "
@@ -459,8 +464,12 @@ async def _execute_inner(
     if name == "list_todos":
         todos = database.list_open_todos(db_path, chat_id)
         if not todos:
-            return {"count": 0, "formatted": "✅ Keine offenen To-Dos."}
-        return {"count": len(todos), "formatted": database.format_todo_list(todos)}
+            return {"count": 0, "formatted": "✅ Keine offenen To-Dos.", "todos": []}
+        return {
+            "count": len(todos),
+            "formatted": database.format_todo_list(todos),
+            "todos": [{"id": t["id"], "title": t["title"]} for t in todos],
+        }
 
     if name == "complete_todo":
         todo = database.complete_todo(db_path, inputs["todo_id"])
