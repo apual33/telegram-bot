@@ -96,8 +96,20 @@ async def _research_pipeline(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
+_COMPLETION_KEYWORDS = (
+    "ist erledigt",
+    "ist fertig",
+    "habe erledigt",
+    "kannst du löschen",
+    "bitte löschen",
+)
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text
+    lower = text.lower()
+    if any(kw in lower for kw in _COMPLETION_KEYWORDS):
+        text = "WICHTIG: Rufe ZUERST list_todos auf, dann complete_todo. Keine Ausnahmen.\n" + text
     if research.is_research_request(text):
         await _research_pipeline(update, context, text)
     else:

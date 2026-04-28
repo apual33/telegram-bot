@@ -316,16 +316,19 @@ async def run(
     tools = _build_tools(now_iso, tomorrow_iso, tz_offset_iso)
 
     while True:
+        # Trim to last 10 messages to prevent long histories from diluting tool instructions.
+        # Always keep the last message (current user turn) and trim from the front.
+        api_messages = messages[-10:] if len(messages) > 10 else messages
         logger.info(
-            "Sending API request | model=%s | tools=%d | messages=%d | tool_names=%s",
-            MODEL, len(tools), len(messages), [t["name"] for t in tools],
+            "Sending API request | model=%s | tools=%d | messages=%d (trimmed from %d) | tool_names=%s",
+            MODEL, len(tools), len(api_messages), len(messages), [t["name"] for t in tools],
         )
         response = await client.messages.create(
             model=MODEL,
             max_tokens=2048,
             system=_system_prompt(config.report_email if config else ""),
             tools=tools,
-            messages=messages,
+            messages=api_messages,
         )
 
         # Serialize all content blocks to plain dicts so they can be re-sent
