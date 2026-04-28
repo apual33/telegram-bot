@@ -184,9 +184,32 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
             "required": ["to", "subject", "body"],
         },
     },
+    {
+        "name": "get_calendar_events",
+        "description": (
+            "Fetch the user's Google Calendar events for a given date. "
+            "Call this whenever the user asks about their schedule, appointments, or Termine — "
+            "for today, tomorrow, or any specific date."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": (
+                        f"ISO date string (YYYY-MM-DD) for the day to look up. "
+                        f"Use the pre-resolved dates from the system prompt: "
+                        f"heute={datetime.now(_TZ).strftime('%Y-%m-%d')}, "
+                        f"morgen={tomorrow_iso}. Defaults to today if omitted."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
 ]  # end of _build_tools return value
 
-_CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "snooze_todo", "save_note", "search_notes", "research", "send_email"}
+_CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "snooze_todo", "save_note", "search_notes", "research", "send_email", "get_calendar_events"}
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
@@ -285,6 +308,8 @@ def _system_prompt(report_email: str = "") -> str:
         "When they choose 'löschen', call complete_todo with the id.\n"
         "- save_note / search_notes: for short notes, references, follow-ups\n"
         "- save_note / search_notes: for notes, thoughts, ideas, reflections, references, follow-ups\n"
+        "- get_calendar_events: call when the user asks about their schedule, Termine, or appointments for any date. "
+        "Pass 'date' as YYYY-MM-DD using the pre-resolved dates above. Return the 'formatted' field as-is.\n"
         "- research: for web lookups; return the result as-is\n"
         f"- send_email: for sending emails.{email_hint}\n\n"
         "When confirming a reminder, always use the 'scheduled_for_display' field from the tool result "
@@ -569,5 +594,35 @@ async def _execute_inner(
         except Exception as exc:
             logger.exception("send_email tool failed")
             return {"ok": False, "error": str(exc)}
+
+    if name == "get_calendar_events":
+        if not config or not config.google_credentials_file:
+            return {"ok": False, "error": "Google Calendar nicht konfiguriert (GOOGLE_CREDENTIALS_FILE fehlt)."}
+        import calendar_integration
+        date = inputs.get("date") or None
+        try:
+            events = await asyncio.get_event_loop().run_in_executor(
+                None, calendar_integration.fetch_today_events,
+                config.google_token_file, config.google_calendar_id, date,
+            )
+        except RuntimeError as exc:
+            if str(exc) == "no_token":
+                return {"ok": False, "error": "Google Calendar nicht verbunden. Bitte /auth_calendar ausführen."}
+            raise
+        now = datetime.now(_TZ)
+        today_iso = now.strftime("%Y-%m-%d")
+        tomorrow_iso = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        if not date or date == today_iso:
+            label = "heute"
+        elif date == tomorrow_iso:
+            label = "morgen"
+        else:
+            label = f"am {date}"
+        return {
+            "ok": True,
+            "date": date or today_iso,
+            "formatted": calendar_integration.format_events(events, label),
+            "events": events,
+        }
 
     return {"error": f"unknown tool: {name}"}

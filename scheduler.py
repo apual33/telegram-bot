@@ -52,7 +52,7 @@ class ReminderScheduler:
         self._scheduler.add_job(
             self._send_daily_digest,
             trigger="cron",
-            hour=8,
+            hour=6,
             minute=0,
             timezone=_TZ,
             args=[chat_id, db_path],

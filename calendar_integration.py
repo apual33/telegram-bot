@@ -73,18 +73,23 @@ def _save_token(creds: Credentials, token_file: str) -> None:
 
 # ── Event fetching ─────────────────────────────────────────────────────────────
 
-def fetch_today_events(token_file: str, calendar_id: str) -> list[dict]:
+def fetch_today_events(token_file: str, calendar_id: str, date: str | None = None) -> list[dict]:
     """
-    Return today's events as a list of dicts with keys 'start' (HH:MM or 'ganztägig')
-    and 'summary'. Raises RuntimeError if the token is missing/invalid.
+    Return events for the given ISO date (YYYY-MM-DD, Europe/Berlin) as a list of
+    dicts with keys 'start' (HH:MM or 'ganztägig') and 'summary'.
+    Defaults to today if date is None. Raises RuntimeError("no_token") if not authorised.
     """
+    from datetime import date as date_type
     creds = _load_credentials(token_file)
     if creds is None:
         raise RuntimeError("no_token")
 
-    now_berlin = datetime.now(_TZ)
-    day_start = now_berlin.replace(hour=0, minute=0, second=0, microsecond=0)
-    day_end = now_berlin.replace(hour=23, minute=59, second=59, microsecond=0)
+    if date:
+        day = datetime.fromisoformat(date).replace(tzinfo=_TZ)
+    else:
+        day = datetime.now(_TZ)
+    day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day.replace(hour=23, minute=59, second=59, microsecond=0)
 
     time_min = day_start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     time_max = day_end.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -119,17 +124,17 @@ def fetch_today_events(token_file: str, calendar_id: str) -> list[dict]:
     return events
 
 
-async def fetch_today_events_async(token_file: str, calendar_id: str) -> list[dict]:
+async def fetch_today_events_async(token_file: str, calendar_id: str, date: str | None = None) -> list[dict]:
     """Async wrapper — runs the blocking API call in a thread pool."""
     return await asyncio.get_event_loop().run_in_executor(
-        None, fetch_today_events, token_file, calendar_id
+        None, fetch_today_events, token_file, calendar_id, date
     )
 
 
-def format_events(events: list[dict]) -> str:
+def format_events(events: list[dict], date_label: str = "heute") -> str:
     if not events:
-        return "📅 Heute keine Termine"
-    lines = ["📅 *Termine heute:*"]
+        return f"📅 {date_label.capitalize()} keine Termine"
+    lines = [f"📅 *Termine {date_label}:*"]
     for e in events:
         lines.append(f"• {e['start']} — {e['summary']}")
     return "\n".join(lines)
