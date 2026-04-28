@@ -15,28 +15,36 @@ logger = logging.getLogger(__name__)
 _SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 _TZ = ZoneInfo("Europe/Berlin")
 
+# Stored between get_auth_url() and exchange_code() so the PKCE code verifier
+# that was generated for the auth URL is reused when fetching the token.
+_pending_flow: Flow | None = None
+
 
 # ── OAuth helpers ──────────────────────────────────────────────────────────────
 
 def get_auth_url(credentials_file: str, token_file: str) -> str:
-    """Return the OAuth consent URL. Raises if credentials_file is missing."""
-    flow = _make_flow(credentials_file, token_file)
-    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+    """Return the OAuth consent URL (PKCE/S256). Raises if credentials_file is missing."""
+    global _pending_flow
+    flow = Flow.from_client_secrets_file(credentials_file, scopes=_SCOPES)
+    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+    auth_url, _ = flow.authorization_url(
+        prompt="consent",
+        access_type="offline",
+        autogenerate_code_verifier=True,
+    )
+    _pending_flow = flow
     return auth_url
 
 
 def exchange_code(code: str, credentials_file: str, token_file: str) -> None:
     """Exchange an auth code for a token and persist it to token_file."""
-    flow = _make_flow(credentials_file, token_file)
-    flow.fetch_token(code=code)
-    _save_token(flow.credentials, token_file)
+    global _pending_flow
+    if _pending_flow is None:
+        raise RuntimeError("No pending OAuth flow — call get_auth_url() first.")
+    _pending_flow.fetch_token(code=code)
+    _save_token(_pending_flow.credentials, token_file)
     logger.info("Google Calendar token saved to %s", token_file)
-
-
-def _make_flow(credentials_file: str, token_file: str) -> Flow:
-    flow = Flow.from_client_secrets_file(credentials_file, scopes=_SCOPES)
-    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
-    return flow
+    _pending_flow = None
 
 
 def _load_credentials(token_file: str) -> Credentials | None:
