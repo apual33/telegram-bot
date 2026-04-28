@@ -1,10 +1,7 @@
 """Google Calendar integration — OAuth2 flow and event fetching."""
 import asyncio
 import logging
-import threading
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 from google.oauth2.credentials import Credentials
@@ -17,81 +14,40 @@ logger = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 _TZ = ZoneInfo("Europe/Berlin")
-_CALLBACK_PORT = 8080
-_CALLBACK_TIMEOUT = 300  # seconds to wait for the user to complete the browser flow
+
+# Held between get_auth_url() and exchange_code() so the same flow object
+# (and its internal state) is reused for the token exchange.
+_pending_flow: Flow | None = None
 
 
-# ── OAuth — local callback server ──────────────────────────────────────────────
+# ── OAuth — OOB (Desktop app) flow ────────────────────────────────────────────
 
-def start_auth_flow(credentials_file: str, token_file: str) -> tuple[str, "asyncio.Future[None]"]:
+def get_auth_url(credentials_file: str) -> str:
     """
-    Start a temporary HTTP server on localhost:8080 and return (auth_url, done_future).
-
-    The caller should:
-      1. Send auth_url to the user immediately.
-      2. Await done_future (with a timeout) to know when the token has been saved.
-
-    The server shuts itself down after the first callback.
-    Raises TimeoutError (from the caller's await) if no callback arrives in time.
+    Build and return the Google consent URL using the OOB redirect.
+    The same flow object is stored in _pending_flow for exchange_code() to reuse.
+    No PKCE — OOB Desktop app credentials do not support it.
     """
+    global _pending_flow
     flow = Flow.from_client_secrets_file(credentials_file, scopes=_SCOPES)
-    flow.redirect_uri = f"http://localhost:{_CALLBACK_PORT}"
+    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+    _pending_flow = flow
+    return auth_url
 
-    auth_url, _ = flow.authorization_url(
-        prompt="consent",
-        access_type="offline",
-        autogenerate_code_verifier=True,
-    )
 
-    loop = asyncio.get_event_loop()
-    # Resolved with None on success, set_exception on error
-    done_future: asyncio.Future[None] = loop.create_future()
-
-    class _CallbackHandler(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            qs = parse_qs(urlparse(self.path).query)
-            code = qs.get("code", [None])[0]
-            error = qs.get("error", [None])[0]
-
-            if code:
-                status, body = 200, b"Authorized! You can close this tab."
-            else:
-                status = 400
-                body = f"Auth error: {error or 'no_code'}. You can close this tab.".encode()
-
-            self.send_response(status)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-            # Exchange the code and save the token, then signal the future
-            def _finish() -> None:
-                if done_future.done():
-                    return
-                try:
-                    if not code:
-                        raise RuntimeError(error or "no_code")
-                    flow.fetch_token(code=code)
-                    _save_token(flow.credentials, token_file)
-                    logger.info("Google Calendar token saved to %s", token_file)
-                    done_future.set_result(None)
-                except Exception as exc:
-                    done_future.set_exception(exc)
-
-            loop.call_soon_threadsafe(_finish)
-            # Ask the server to stop after this request
-            threading.Thread(target=server.shutdown, daemon=True).start()
-
-        def log_message(self, fmt: str, *args: object) -> None:
-            pass
-
-    server = HTTPServer(("localhost", _CALLBACK_PORT), _CallbackHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    logger.info("OAuth callback server listening on port %d", _CALLBACK_PORT)
-
-    return auth_url, done_future
+def exchange_code(code: str, token_file: str) -> None:
+    """
+    Exchange the code the user pasted from the Google consent page.
+    Must be called after get_auth_url() — reuses the stored flow object.
+    """
+    global _pending_flow
+    if _pending_flow is None:
+        raise RuntimeError("No pending OAuth flow — call get_auth_url() first.")
+    _pending_flow.fetch_token(code=code)
+    _save_token(_pending_flow.credentials, token_file)
+    logger.info("Google Calendar token saved to %s", token_file)
+    _pending_flow = None
 
 
 def _load_credentials(token_file: str) -> Credentials | None:
