@@ -399,6 +399,21 @@ async def _execute(
         return {"ok": False, "error": "internal error — check server logs"}
 
 
+def _fresh_todo_list(db_path: str, chat_id: int) -> dict:
+    """Return the current open todo list with a note instructing the model to show it."""
+    todos = database.list_open_todos(db_path, chat_id)
+    if not todos:
+        result = {"count": 0, "formatted": "✅ Keine offenen To-Dos.", "todos": []}
+    else:
+        result = {
+            "count": len(todos),
+            "formatted": database.format_todo_list(todos),
+            "todos": [{"id": t["id"], "title": t["title"]} for t in todos],
+        }
+    result["_note"] = "Here is the current up-to-date todo list from the database — show this to the user in your response."
+    return result
+
+
 async def _execute_inner(
     name: str,
     inputs: dict,
@@ -424,6 +439,7 @@ async def _execute_inner(
         result: dict = {"ok": True, "id": tid}
         if remind_at:
             result["scheduled_for_display"] = _fmt_berlin(remind_at)
+        result["current_todos"] = _fresh_todo_list(db_path, chat_id)
         return result
 
     if name == "save_note":
@@ -482,7 +498,7 @@ async def _execute_inner(
         if todo:
             logger.info("complete_todo | marked done | id=%d | title=%r", todo["id"], todo["title"])
             sched.remove_reminder(todo_id)
-            return {"ok": True, "id": todo["id"], "title": todo["title"]}
+            return {"ok": True, "id": todo["id"], "title": todo["title"], "current_todos": _fresh_todo_list(db_path, chat_id)}
         else:
             logger.warning("complete_todo | not found or already done | id=%d", todo_id)
             return {"ok": False, "error": f"Todo {todo_id} not found or already done"}
@@ -493,7 +509,7 @@ async def _execute_inner(
             return {"ok": False, "error": "Todo not found or has no reminder set"}
         new_dt = datetime.fromisoformat(result["remind_at"]).replace(tzinfo=timezone.utc)
         sched.add_reminder(inputs["todo_id"], chat_id, result["title"], new_dt)
-        return {"ok": True, "scheduled_for_display": _fmt_berlin(new_dt)}
+        return {"ok": True, "scheduled_for_display": _fmt_berlin(new_dt), "current_todos": _fresh_todo_list(db_path, chat_id)}
 
     if name == "research":
         import httpx
