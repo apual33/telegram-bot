@@ -13,12 +13,14 @@ from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
+    CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
 )
 
 import ai
+import calendar_integration
 import database
 import research
 import voice as voice_module
@@ -106,6 +108,11 @@ _COMPLETION_KEYWORDS = (
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # If we're mid-OAuth flow, treat the message as the auth code
+    if context.bot_data.get("awaiting_calendar_code"):
+        await handle_calendar_code(update, context)
+        return
+
     text = update.message.text
     lower = text.lower()
     if any(kw in lower for kw in _COMPLETION_KEYWORDS):
@@ -140,6 +147,44 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _pipeline(update, context, text)
 
 
+async def handle_auth_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    config: Config = context.bot_data["config"]
+    if not config.google_credentials_file:
+        await update.message.reply_text(
+            "GOOGLE\\_CREDENTIALS\\_FILE ist nicht konfiguriert. Bitte credentials.json herunterladen und Pfad in .env setzen.",
+            parse_mode="Markdown",
+        )
+        return
+    try:
+        auth_url = calendar_integration.get_auth_url(
+            config.google_credentials_file, config.google_token_file
+        )
+    except Exception:
+        logger.exception("Failed to generate Google auth URL")
+        await update.message.reply_text("Fehler beim Generieren der Auth-URL. Bitte Logs prüfen.")
+        return
+
+    context.bot_data["awaiting_calendar_code"] = True
+    await update.message.reply_text(
+        f"Bitte diese URL öffnen und autorisieren:\n\n{auth_url}\n\n"
+        "Dann den angezeigten Code hier einschicken.",
+    )
+
+
+async def handle_calendar_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive the OAuth code the user pastes after visiting the auth URL."""
+    config: Config = context.bot_data["config"]
+    code = update.message.text.strip()
+    try:
+        calendar_integration.exchange_code(code, config.google_credentials_file, config.google_token_file)
+    except Exception:
+        logger.exception("Failed to exchange Google auth code")
+        await update.message.reply_text("Ungültiger Code oder Fehler beim Austausch. Bitte /auth\\_calendar erneut versuchen.", parse_mode="Markdown")
+        return
+    context.bot_data.pop("awaiting_calendar_code", None)
+    await update.message.reply_text("✅ Google Calendar erfolgreich verbunden!")
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -168,6 +213,7 @@ async def _post_init(app: Application) -> None:
     app.bot_data["openai_client"] = AsyncOpenAI(api_key=config.openai_api_key)
 
     sched = ReminderScheduler(app.bot, config.db_path)
+    sched.set_config(config)
     sched.start()
     app.bot_data["scheduler"] = sched
 
@@ -206,6 +252,7 @@ def build_app(config: Config) -> Application:
     )
     app.bot_data["config"] = config
 
+    app.add_handler(CommandHandler("auth_calendar", handle_auth_calendar))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))

@@ -19,6 +19,9 @@ class Config:
     telegram_chat_id: int = 0  # owner chat_id for proactive messages (daily digest)
     serper_api_key: str = ""
     voyage_api_key: str = ""
+    google_credentials_file: str = ""
+    google_token_file: str = "token.json"
+    google_calendar_id: str = "pierre.aldag@gmail.com"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -34,4 +37,7 @@ class Config:
             telegram_chat_id=int(os.getenv("TELEGRAM_CHAT_ID", "0")),
             serper_api_key=os.getenv("SERPER_API_KEY", ""),
             voyage_api_key=os.getenv("VOYAGE_API_KEY", ""),
+            google_credentials_file=os.getenv("GOOGLE_CREDENTIALS_FILE", ""),
+            google_token_file=os.getenv("GOOGLE_TOKEN_FILE", "token.json"),
+            google_calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "pierre.aldag@gmail.com"),
         )

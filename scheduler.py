@@ -5,7 +5,9 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Bot
 
+import calendar_integration
 import database
+from config import Config
 
 _TZ = ZoneInfo("Europe/Berlin")
 logger = logging.getLogger(__name__)
@@ -16,6 +18,10 @@ class ReminderScheduler:
         self._bot = bot
         self._db_path = db_path
         self._scheduler = AsyncIOScheduler()
+        self._config: Config | None = None
+
+    def set_config(self, config: Config) -> None:
+        self._config = config
 
     def start(self) -> None:
         self._scheduler.start()
@@ -56,14 +62,39 @@ class ReminderScheduler:
         logger.info("Scheduled daily digest for chat %d at 08:00 Europe/Berlin", chat_id)
 
     async def _send_daily_digest(self, chat_id: int, db_path: str) -> None:
+        parts: list[str] = []
+
+        # ── Calendar events ────────────────────────────────────────────────────
+        if self._config and self._config.google_credentials_file:
+            try:
+                events = await calendar_integration.fetch_today_events_async(
+                    self._config.google_token_file,
+                    self._config.google_calendar_id,
+                )
+                parts.append(calendar_integration.format_events(events))
+            except RuntimeError as exc:
+                if str(exc) == "no_token":
+                    logger.warning("Google Calendar token missing — notifying user")
+                    await self._bot.send_message(
+                        chat_id=chat_id,
+                        text="⚠️ Google Calendar nicht verbunden. Bitte /auth\\_calendar ausführen.",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    logger.exception("Calendar fetch failed")
+            except Exception:
+                logger.exception("Calendar fetch failed")
+
+        # ── To-do list ─────────────────────────────────────────────────────────
         todos = database.list_open_todos(db_path, chat_id)
-        if not todos:
-            await self._bot.send_message(chat_id=chat_id, text="✅ Keine offenen To-Dos — guten Morgen!")
-            return
+        if todos:
+            parts.append(database.format_todo_list(todos))
+        else:
+            parts.append("✅ Keine offenen To-Dos")
 
         await self._bot.send_message(
             chat_id=chat_id,
-            text=database.format_todo_list(todos),
+            text="\n\n".join(parts),
             parse_mode="Markdown",
         )
 
