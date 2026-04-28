@@ -108,11 +108,6 @@ _COMPLETION_KEYWORDS = (
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # If we're mid-OAuth flow, treat the message as the auth code
-    if context.bot_data.get("awaiting_calendar_code"):
-        await handle_calendar_code(update, context)
-        return
-
     text = update.message.text
     lower = text.lower()
     if any(kw in lower for kw in _COMPLETION_KEYWORDS):
@@ -155,34 +150,43 @@ async def handle_auth_calendar(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode="Markdown",
         )
         return
+
     try:
-        auth_url = calendar_integration.get_auth_url(
+        auth_url, done_future = calendar_integration.start_auth_flow(
             config.google_credentials_file, config.google_token_file
         )
     except Exception:
-        logger.exception("Failed to generate Google auth URL")
-        await update.message.reply_text("Fehler beim Generieren der Auth-URL. Bitte Logs prüfen.")
+        logger.exception("Failed to start OAuth flow")
+        await update.message.reply_text("Fehler beim Starten des OAuth-Flows. Bitte Logs prüfen.")
         return
 
-    context.bot_data["awaiting_calendar_code"] = True
     await update.message.reply_text(
-        f"Bitte diese URL öffnen und autorisieren:\n\n{auth_url}\n\n"
-        "Dann den angezeigten Code hier einschicken.",
+        f"Bitte diese URL im Browser öffnen:\n\n{auth_url}\n\n"
+        "Nach der Autorisierung erhältst du hier automatisch eine Bestätigung."
     )
 
+    async def _wait_for_token() -> None:
+        try:
+            await asyncio.wait_for(done_future, timeout=calendar_integration._CALLBACK_TIMEOUT)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="✅ Google Calendar erfolgreich verbunden!",
+            )
+        except TimeoutError:
+            logger.warning("OAuth flow timed out")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="⏰ Timeout: Autorisierung nicht abgeschlossen. Bitte /auth\\_calendar erneut versuchen.",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            logger.exception("OAuth flow failed")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Fehler beim OAuth-Flow. Bitte Logs prüfen und /auth\\_calendar erneut versuchen.",
+            )
 
-async def handle_calendar_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Receive the OAuth code the user pastes after visiting the auth URL."""
-    config: Config = context.bot_data["config"]
-    code = update.message.text.strip()
-    try:
-        calendar_integration.exchange_code(code, config.google_credentials_file, config.google_token_file)
-    except Exception:
-        logger.exception("Failed to exchange Google auth code")
-        await update.message.reply_text("Ungültiger Code oder Fehler beim Austausch. Bitte /auth\\_calendar erneut versuchen.", parse_mode="Markdown")
-        return
-    context.bot_data.pop("awaiting_calendar_code", None)
-    await update.message.reply_text("✅ Google Calendar erfolgreich verbunden!")
+    asyncio.create_task(_wait_for_token())
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
