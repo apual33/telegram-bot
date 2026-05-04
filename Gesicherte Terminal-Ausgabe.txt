@@ -1,0 +1,1613 @@
+╭─── Claude Code v2.1.92 ──────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                        │
+│                Welcome back Pierre!                │ Run /init to create a CLAUDE.md file with instructions for Cla… │
+│                                                    │ ─────────────────────────────────────────────────────────────── │
+│                      ▗ ▗   ▖ ▖                     │ Recent activity                                                 │
+│                                                    │ No recent activity                                              │
+│                        ▘▘ ▝▝                       │                                                                 │
+│ Sonnet 4.6 · Claude Pro · pierre.aldag@gmail.com's │                                                                 │
+│  Organization                                      │                                                                 │
+│                ~/Tools/telegram-bot                │                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+❯                                                                                                                       
+                                                                                                                        
+"The complete_todo tool is not being called when the user asks to delete or complete a todo — the model returns         
+end_turn with plain text instead. This is the same issue we fixed for create_todo earlier. Strengthen the system prompt 
+ rule: add 'complete_todo' explicitly to the mandatory tool list. The rule should say: 'You MUST use the appropriate    
+tool for every action — create_todo to save tasks, complete_todo to mark them done, list_todos to show them. NEVER just 
+ describe what you would do. If the user wants to delete or complete a task, you MUST call list_todos first and then    
+complete_todo — no exceptions.'"                                                                                        
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+⏺ Update(ai.py)
+  ⎿  Added 4 lines, removed 2 lines
+      266          f"remind_in_minutes (e.g. 5 or 120) — the server computes the exact time. "
+      267          f"For absolute times ('at 10:00', 'morgen um 9') use remind_at as a full ISO 8601 datetime "
+      268          f"with UTC offset, e.g. {tomorrow_iso}T10:00:00{tz_offset_iso}.\n\n"                                 
+      269 +        "You MUST use the appropriate tool for every action — create_todo to save tasks, complete_todo
+          + to mark them done, list_todos to show them. NEVER just describe what you would do.\n\n"                     
+      270          "Tools and when to call them (mandatory — use the tool, do not just talk about it):\n"             
+      271          "- create_todo: call this for ANY request to remember, save, or be reminded of something. "
+      272          "Pass remind_in_minutes for relative times ('in 5 minutes' → 5), remind_at for absolute times.
+           \n"
+      273          "- list_todos: call this ALWAYS when asked for todos/tasks — never answer from memory\n"
+      274          "  - The result contains a 'formatted' field — output it EXACTLY as-is, word for word. Do not
+           reformat, reorder, or recount.\n"
+      274 -        "- complete_todo: call when user says they finished a task. "                                 
+      275 -        "ALWAYS call list_todos first to get current IDs — never guess an ID. "                       
+      275 +        "- complete_todo: call when user wants to delete, remove, or complete/finish a task — no excep
+          +tions. "                                                                                              
+      276 +        "You MUST call list_todos first to get current IDs, then call complete_todo with the correct i
+          +d. "                                                                                                  
+      277 +        "NEVER guess an ID. NEVER describe this action without calling the tool. "                    
+      278          "Pick the correct id from the 'todos' list in the list_todos result using semantic understandi
+           ng, "
+      279          "then call complete_todo with that exact id. "
+      280          "The result contains 'title' — always repeat this exact title in your confirmation ('Habe \\'X
+           \\' als erledigt markiert ✓')\n"
+
+⏺ Done. The changes:
+
+  1. Added a top-level mandatory rule before the tool list: "You MUST use the appropriate tool for every action —       
+  create_todo to save tasks, complete_todo to mark them done, list_todos to show them. NEVER just describe what you 
+  would do."                                                                                                            
+  2. Strengthened the complete_todo bullet to explicitly cover delete/remove requests, added "no exceptions", and made
+  it clear the tool must be called — not just described.                                                                
+   
+❯ "The complete_todo tool is intermittently not being called — the model returns end_turn with plain text instead. This 
+ happens especially after long conversations. Two fixes needed: 1) Add a dedicated message handler in bot.py that       
+detects completion intent keywords ('ist erledigt', 'ist fertig', 'habe erledigt', 'kannst du löschen', 'bitte          
+löschen') and injects a reminder into the message before passing it to the AI: prepend 'WICHTIG: Rufe ZUERST list_todos 
+ auf, dann complete_todo. Keine Ausnahmen.' to the user message. 2) Trim the conversation history in ai.py to the last  
+10 messages before sending to the API — long histories cause the model to lose track of tool instructions."             
+                                                                                                                        
+  Read 2 files (ctrl+o to expand)    
+                                                                                                                        
+⏺ Two clear insertion points. Making both changes now:                                                                
+                                                                                                                        
+⏺ Update(bot.py)                                                        
+  ⎿  Added 12 lines                                                                                                     
+       96                                                                                                               
+       97  # ── Handlers ──────────────────────────────────────────────────────────────────                             
+       98                                                                                                               
+       99 +_COMPLETION_KEYWORDS = (                                                                                     
+      100 +    "ist erledigt",                                                                                        
+      101 +    "ist fertig",                                                                                            
+      102 +    "habe erledigt",                                                                                       
+      103 +    "kannst du löschen",                                                                              
+      104 +    "bitte löschen",                                                                                  
+      105 +)                                                                                                     
+      106 +                                                                                                      
+      107 +                                                                                                      
+      108  async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+      109      text = update.message.text
+      110 +    lower = text.lower()                                                                              
+      111 +    if any(kw in lower for kw in _COMPLETION_KEYWORDS):                                               
+      112 +        text = "WICHTIG: Rufe ZUERST list_todos auf, dann complete_todo. Keine Ausnahmen.\n" + text   
+      113      if research.is_research_request(text):
+      114          await _research_pipeline(update, context, text)
+      115      else:
+
+⏺ Now trim the history to the last 10 messages in ai.py before the API call:
+                                                                        
+⏺ Update(ai.py)           
+  ⎿  Added 6 lines, removed 3 lines                                                                                     
+      316      tools = _build_tools(now_iso, tomorrow_iso, tz_offset_iso)
+      317                                                                                                               
+      318      while True:                                                                                            
+      319 +        # Trim to last 10 messages to prevent long histories from diluting tool instructions.                
+      320 +        # Always keep the last message (current user turn) and trim from the front.                        
+      321 +        api_messages = messages[-10:] if len(messages) > 10 else messages                             
+      322          logger.info(
+      320 -            "Sending API request | model=%s | tools=%d | messages=%d | tool_names=%s",                
+      321 -            MODEL, len(tools), len(messages), [t["name"] for t in tools],                             
+      323 +            "Sending API request | model=%s | tools=%d | messages=%d (trimmed from %d) | tool_names=%s
+          +",                                                                                                    
+      324 +            MODEL, len(tools), len(api_messages), len(messages), [t["name"] for t in tools],          
+      325          )
+      326          response = await client.messages.create(
+      327              model=MODEL,
+      328              max_tokens=2048,
+      329              system=_system_prompt(config.report_email if config else ""),
+      330              tools=tools,
+      328 -            messages=messages,                                                                        
+      331 +            messages=api_messages,                                                                    
+      332          )
+      333  
+      334          # Serialize all content blocks to plain dicts so they can be re-sent
+
+⏺ Also need to fix the messages.append line — it should append to messages (not api_messages) so the agentic loop state
+  is preserved correctly within a multi-turn tool call cycle:           
+
+  Read 1 file (ctrl+o to expand)                                                                                        
+          
+⏺ Good — messages.append is already on messages (not api_messages), so the agentic loop state within a single request   
+  cycle is preserved correctly. The trimming only affects what's sent to the API, not the in-memory working list.     
+                                                                        
+  Both fixes are in place:                                                                                              
+                                                                                                                        
+  1. bot.py — handle_text checks for completion/deletion keywords and prepends the WICHTIG reminder to the user message 
+  before it reaches the AI.                                                                                             
+  2. ai.py — run() now slices messages[-10:] into api_messages before each API call, keeping the in-flight messages list
+   intact for multi-turn tool loops.                                                                                    
+   
+❯ After every successful create_todo, complete_todo, or snooze_todo tool call in ai.py, automatically call list_todos   
+and append the result to the tool response before returning to the model. This way the model always has the fresh DB    
+state and will include the updated list in its reply to the user. The model must use this fresh list — add a note in    
+the tool result: 'Here is the current up-to-date todo list from the database — show this to the user in your response.' 
+                                                                                                                        
+  Read 1 file (ctrl+o to expand)                                                                                        
+                                                                                                                        
+⏺ Now I have the full picture. The cleanest approach is to append the fresh list inside _execute_inner for the three  
+  mutating tools, right before returning their result.                                                                  
+                                                                                                
+⏺ Update(ai.py)                                                                                                         
+  ⎿  Added 1 line                                                                                                       
+      424          result: dict = {"ok": True, "id": tid}                                                               
+      425          if remind_at:                                                                                        
+      426              result["scheduled_for_display"] = _fmt_berlin(remind_at)                                       
+      427 +        result["current_todos"] = _fresh_todo_list(db_path, chat_id)                                         
+      428          return result                                                                                      
+      429                                                                                                               
+      430      if name == "save_note":                                                                                
+
+⏺ Update(ai.py)       
+  ⎿  Added 1 line, removed 1 line                                                               
+      483          if todo:
+      484              logger.info("complete_todo | marked done | id=%d | title=%r", todo["id"], todo["title"])         
+      485              sched.remove_reminder(todo_id)
+      486 -            return {"ok": True, "id": todo["id"], "title": todo["title"]}                                    
+      486 +            return {"ok": True, "id": todo["id"], "title": todo["title"], "current_todos": _fresh_todo     
+          +_list(db_path, chat_id)}                                                                                     
+      487          else:                                                                                              
+      488              logger.warning("complete_todo | not found or already done | id=%d", todo_id)
+      489              return {"ok": False, "error": f"Todo {todo_id} not found or already done"}
+
+⏺ Update(ai.py)       
+  ⎿  Added 1 line, removed 1 line                                                               
+      494              return {"ok": False, "error": "Todo not found or has no reminder set"}
+      495          new_dt = datetime.fromisoformat(result["remind_at"]).replace(tzinfo=timezone.utc)                    
+      496          sched.add_reminder(inputs["todo_id"], chat_id, result["title"], new_dt)
+      497 -        return {"ok": True, "scheduled_for_display": _fmt_berlin(new_dt)}                                    
+      497 +        return {"ok": True, "scheduled_for_display": _fmt_berlin(new_dt), "current_todos": _fresh_todo     
+          +_list(db_path, chat_id)}                                                                                     
+      498                                                                                                             
+      499      if name == "research":
+      500          import httpx
+
+⏺ Now add the _fresh_todo_list helper. I'll place it just before _execute_inner:
+                                                                                                
+⏺ Update(ai.py)       
+  ⎿  Added 15 lines                                                                                                     
+      399          return {"ok": False, "error": "internal error — check server logs"}
+      400                                                                                                               
+      401                                                                                                             
+      402 +def _fresh_todo_list(db_path: str, chat_id: int) -> dict:                                                    
+      403 +    """Return the current open todo list with a note instructing the model to show it."""                  
+      404 +    todos = database.list_open_todos(db_path, chat_id)                                                       
+      405 +    if not todos:                                                                                          
+      406 +        result = {"count": 0, "formatted": "✅ Keine offenen To-Dos.", "todos": []}                   
+      407 +    else:                                                                                             
+      408 +        result = {                                                                                    
+      409 +            "count": len(todos),                                                                      
+      410 +            "formatted": database.format_todo_list(todos),                                            
+      411 +            "todos": [{"id": t["id"], "title": t["title"]} for t in todos],                           
+      412 +        }                                                                                             
+      413 +    result["_note"] = "Here is the current up-to-date todo list from the database — show this to the u
+          +ser in your response."                                                                                
+      414 +    return result                                                                                     
+      415 +                                                                                                      
+      416 +                                                                                                      
+      417  async def _execute_inner(
+      418      name: str,
+      419      inputs: dict,
+
+⏺ Done. Here's what was added:
+                                                                                                
+  - _fresh_todo_list(db_path, chat_id) — a small sync helper that queries the DB and returns the same shape as          
+  list_todos, plus a _note key instructing the model to show the list.                                                  
+  - create_todo result now includes current_todos.                                                                      
+  - complete_todo success result now includes current_todos.                                                            
+  - snooze_todo success result now includes current_todos.                                                              
+   
+  The model receives the fresh DB state in the same tool result it's already reading, so no extra API round-trip is     
+  needed.                                                                                                             
+                                                                                                                        
+✻ Worked for 31s                                                                                                      
+
+❯ Add Google Calendar integration to the daily digest. Requirements:                                                    
+                                                                                                                        
+Use google-auth-oauthlib and google-api-python-client packages                                                          
+OAuth2 flow: on first run, generate an auth URL, send it to the user via Telegram, user visits it and gets a code, user 
+ sends the code back to the bot, bot exchanges it for a token and saves it to token.json                                
+Add a /auth_calendar command in bot.py that starts the OAuth flow                                                       
+In scheduler.py, the daily digest should fetch today's calendar events from calendar ID pierre.aldag@gmail.com          
+(read-only scope) and include them in the morning message, formatted like:                                              
+                                                                                                                        
+📅 Termine heute:                                                                                                       
+• 10:00 — Zahnarzt                                                                                                      
+• 14:00 — Meeting mit Wolf                                                                                              
+If no events: '📅 Heute keine Termine'                                                                                  
+5. credentials.json and token.json paths configurable via .env as GOOGLE_CREDENTIALS_FILE and GOOGLE_TOKEN_FILE         
+6. Calendar ID configurable via .env as GOOGLE_CALENDAR_ID, default pierre.aldag@gmail.com                              
+7. If token is missing or expired, send the user a Telegram message to run /auth_calendar                               
+
+⏺ Explore(Explore project structure)
+  ⎿  Done (4 tool uses · 18.3k tokens · 13s)                                
+  (ctrl+o to expand)   
+                                                                                                                        
+  Read 1 file (ctrl+o to expand)                                            
+                                                                                                                        
+⏺ Now I have everything I need. Let me implement all the pieces:                                                        
+                                                                                                                        
+⏺ Update(requirements.txt)                                                                                              
+  ⎿  Added 2 lines                                                                                                      
+       6  python-docx>=1.1.0                                                                                            
+       7  httpx>=0.27.0                                                                                                 
+       8  voyageai>=0.3.0                                                                                               
+       9 +google-auth-oauthlib>=1.2.0                                                                                   
+      10 +google-api-python-client>=2.130.0                                                                             
+                                                                                                                        
+⏺ Update(config.py)                                                                                                   
+  ⎿  File must be read first                                                              
+                                                 
+  Read 1 file (ctrl+o to expand)                                                                                        
+                                                                                          
+⏺ Update(config.py)                                                                                                     
+  ⎿  Added 6 lines                                                                                                      
+      19      telegram_chat_id: int = 0  # owner chat_id for proactive messages (daily digest)                          
+      20      serper_api_key: str = ""                                                                                  
+      21      voyage_api_key: str = ""                                                                                  
+      22 +    google_credentials_file: str = ""                                                                         
+      23 +    google_token_file: str = "token.json"                                                                     
+      24 +    google_calendar_id: str = "pierre.aldag@gmail.com"                                                        
+      25                                                                                                              
+      26      @classmethod
+      27      def from_env(cls) -> "Config":
+     ...
+      37              telegram_chat_id=int(os.getenv("TELEGRAM_CHAT_ID", "0")),
+      38              serper_api_key=os.getenv("SERPER_API_KEY", ""),
+      39              voyage_api_key=os.getenv("VOYAGE_API_KEY", ""),
+      40 +            google_credentials_file=os.getenv("GOOGLE_CREDENTIALS_FILE", ""),                          
+      41 +            google_token_file=os.getenv("GOOGLE_TOKEN_FILE", "token.json"),                            
+      42 +            google_calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "pierre.aldag@gmail.com"),              
+      43          )
+
+⏺ Now create the calendar module:                
+                                                                                          
+⏺ Write(calendar_integration.py)                   
+  ⎿  Wrote 124 lines to calendar_integration.py                                                                         
+       1 """Google Calendar integration — OAuth2 flow and event fetching."""
+       2 import asyncio                                                                                                 
+       3 import logging                                                                                               
+       4 from datetime import datetime, timezone                                                                        
+       5 from zoneinfo import ZoneInfo                                                                                
+       6
+       7 from google.oauth2.credentials import Credentials
+       8 from google.auth.transport.requests import Request
+       9 from google_auth_oauthlib.flow import Flow
+      10 from googleapiclient.discovery import build
+     … +114 lines (ctrl+o to expand)
+
+⏺ Now update scheduler.py to include calendar events in the digest:
+                                                                                          
+⏺ Update(scheduler.py)                              
+  ⎿  File must be read first                                                                                            
+                                                    
+⏺ Reading 1 file… (ctrl+o to expand)                                                                                    
+  ⎿  scheduler.py                                                                                                     
+                                                                                                                        
+⏺ Write(scheduler.py)                                                                                                   
+  ⎿  Added 35 lines, removed 4 lines                                                                                    
+       5  from apscheduler.schedulers.asyncio import AsyncIOScheduler                                                   
+       6  from telegram import Bot                                                                                      
+       7                                                                                                                
+       8 +import calendar_integration                                                                                   
+       9  import database                                                                                             
+      10 +from config import Config                                                                                     
+      11                                                                                                              
+      12  _TZ = ZoneInfo("Europe/Berlin")
+      13  logger = logging.getLogger(__name__)
+     ...
+      18          self._bot = bot
+      19          self._db_path = db_path
+      20          self._scheduler = AsyncIOScheduler()
+      21 +        self._config: Config | None = None                                                             
+      22  
+      23 +    def set_config(self, config: Config) -> None:                                                      
+      24 +        self._config = config                                                                          
+      25 +                                                                                                       
+      26      def start(self) -> None:
+      27          self._scheduler.start()
+      28  
+     ...
+       62          logger.info("Scheduled daily digest for chat %d at 08:00 Europe/Berlin", chat_id)
+       63  
+       64      async def _send_daily_digest(self, chat_id: int, db_path: str) -> None:
+       65 +        parts: list[str] = []                                                                         
+       66 +                                                                                                      
+       67 +        # ── Calendar events ────────────────────────────────────────────────────                     
+       68 +        if self._config and self._config.google_credentials_file:                                     
+       69 +            try:                                                                                      
+       70 +                events = await calendar_integration.fetch_today_events_async(                         
+       71 +                    self._config.google_token_file,                                                   
+       72 +                    self._config.google_calendar_id,                                                  
+       73 +                )                                                                                     
+       74 +                parts.append(calendar_integration.format_events(events))                              
+       75 +            except RuntimeError as exc:                                                               
+       76 +                if str(exc) == "no_token":                                                            
+       77 +                    logger.warning("Google Calendar token missing — notifying user")                  
+       78 +                    await self._bot.send_message(                                                     
+       79 +                        chat_id=chat_id,                                                              
+       80 +                        text="⚠️  Google Calendar nicht verbunden. Bitte /auth\\_calendar ausführen.", 
+       81 +                        parse_mode="Markdown",                                                        
+       82 +                    )                                                                                 
+       83 +                else:                                                                                 
+       84 +                    logger.exception("Calendar fetch failed")                                         
+       85 +            except Exception:                                                                         
+       86 +                logger.exception("Calendar fetch failed")                                             
+       87 +                                                                                                      
+       88 +        # ── To-do list ─────────────────────────────────────────────────────────                     
+       89          todos = database.list_open_todos(db_path, chat_id)
+       60 -        if not todos:                                                                                 
+       61 -            await self._bot.send_message(chat_id=chat_id, text="✅ Keine offenen To-Dos — guten Morgen
+          -!")                                                                                                   
+       62 -            return                                                                                    
+       90 +        if todos:                                                                                     
+       91 +            parts.append(database.format_todo_list(todos))                                            
+       92 +        else:                                                                                         
+       93 +            parts.append("✅ Keine offenen To-Dos")                                                   
+       94  
+       95          await self._bot.send_message(
+       96              chat_id=chat_id,
+       66 -            text=database.format_todo_list(todos),                                                    
+       97 +            text="\n\n".join(parts),                                                                  
+       98              parse_mode="Markdown",
+       99          )
+      100  
+
+⏺ Now add the /auth_calendar command and wire config into the scheduler in bot.py:
+                                                                                          
+⏺ Update(bot.py)                                    
+  ⎿  Added 1 line                                                                                                       
+      19  )                                         
+      20                                                                                                                
+      21  import ai                                                                                                   
+      22 +import calendar_integration                                                                                   
+      23  import database                                                                                             
+      24  import research                                                                                               
+      25  import voice as voice_module                                                                                
+
+⏺ Update(bot.py)                                    
+  ⎿  Added 1 line                                                                         
+      13      Application,                          
+      14      ApplicationBuilder,                                                                                       
+      15      CallbackQueryHandler,
+      16 +    CommandHandler,                                                                                           
+      17      ContextTypes,                                                                                           
+      18      MessageHandler,                                                                                           
+      19      filters,                                                                                                
+
+⏺ Now add the /auth_calendar handler and the code-reply handler, and wire config into the scheduler:
+                                                                                          
+⏺ Update(bot.py)                                    
+  ⎿  Added 38 lines                                                                                                     
+      142      await _pipeline(update, context, text)
+      143                                                                                                               
+      144                                                                                                             
+      145 +async def handle_auth_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:                  
+      146 +    config: Config = context.bot_data["config"]                                                            
+      147 +    if not config.google_credentials_file:                                                                   
+      148 +        await update.message.reply_text(                                                                   
+      149 +            "GOOGLE\\_CREDENTIALS\\_FILE ist nicht konfiguriert. Bitte credentials.json herunterladen 
+          +und Pfad in .env setzen.",                                                                            
+      150 +            parse_mode="Markdown",                                                                    
+      151 +        )                                                                                             
+      152 +        return                                                                                        
+      153 +    try:                                                                                              
+      154 +        auth_url = calendar_integration.get_auth_url(                                                 
+      155 +            config.google_credentials_file, config.google_token_file                                  
+      156 +        )                                                                                             
+      157 +    except Exception:                                                                                 
+      158 +        logger.exception("Failed to generate Google auth URL")                                        
+      159 +        await update.message.reply_text("Fehler beim Generieren der Auth-URL. Bitte Logs prüfen.")    
+      160 +        return                                                                                        
+      161 +                                                                                                      
+      162 +    context.bot_data["awaiting_calendar_code"] = True                                                 
+      163 +    await update.message.reply_text(                                                                  
+      164 +        f"Bitte diese URL öffnen und autorisieren:\n\n{auth_url}\n\n"                                 
+      165 +        "Dann den angezeigten Code hier einschicken.",                                                
+      166 +    )                                                                                                 
+      167 +                                                                                                      
+      168 +                                                                                                      
+      169 +async def handle_calendar_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:           
+      170 +    """Receive the OAuth code the user pastes after visiting the auth URL."""                         
+      171 +    config: Config = context.bot_data["config"]                                                       
+      172 +    code = update.message.text.strip()                                                                
+      173 +    try:                                                                                              
+      174 +        calendar_integration.exchange_code(code, config.google_credentials_file, config.google_token_f
+          +ile)                                                                                                  
+      175 +    except Exception:                                                                                 
+      176 +        logger.exception("Failed to exchange Google auth code")                                       
+      177 +        await update.message.reply_text("Ungültiger Code oder Fehler beim Austausch. Bitte /auth\\_cal
+          +endar erneut versuchen.", parse_mode="Markdown")                                                      
+      178 +        return                                                                                        
+      179 +    context.bot_data.pop("awaiting_calendar_code", None)                                              
+      180 +    await update.message.reply_text("✅ Google Calendar erfolgreich verbunden!")                      
+      181 +                                                                                                      
+      182 +                                                                                                      
+      183  async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+      184      query = update.callback_query
+      185      await query.answer()
+
+⏺ Now update handle_text to intercept the OAuth code when awaiting it, and update _post_init to pass config to the
+  scheduler:                                                                              
+
+⏺ Update(bot.py)                                                                                                        
+  ⎿  Added 5 lines                                                                        
+      108                                                                                                               
+      109                                                                                                               
+      110  async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+      111 +    # If we're mid-OAuth flow, treat the message as the auth code                                            
+      112 +    if context.bot_data.get("awaiting_calendar_code"):                                                     
+      113 +        await handle_calendar_code(update, context)                                                          
+      114 +        return                                                                                             
+      115 +                                                                                                      
+      116      text = update.message.text
+      117      lower = text.lower()
+      118      if any(kw in lower for kw in _COMPLETION_KEYWORDS):
+
+⏺ Update(bot.py)                                    
+  ⎿  Added 1 line                                                                         
+      213      app.bot_data["openai_client"] = AsyncOpenAI(api_key=config.openai_api_key)
+      214                                                                                                               
+      215      sched = ReminderScheduler(app.bot, config.db_path)
+      216 +    sched.set_config(config)                                                                                 
+      217      sched.start()                                                                                          
+      218      app.bot_data["scheduler"] = sched                                                                        
+      219                                                                                                             
+
+⏺ Finally, register the /auth_calendar command handler:
+                                                                                          
+⏺ Update(bot.py)                                   
+  ⎿  Added 1 line                                                                                                       
+      252      )                                   
+      253      app.bot_data["config"] = config                                                                          
+      254                                                                                                             
+      255 +    app.add_handler(CommandHandler("auth_calendar", handle_auth_calendar))                                   
+      256      app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))                          
+      257      app.add_handler(MessageHandler(filters.VOICE, handle_voice))                                             
+      258      app.add_handler(CallbackQueryHandler(handle_callback))                                                 
+
+⏺ Update .env.example with the new variables:      
+                                                                                          
+  Read 1 file (ctrl+o to expand)    
+                                                                                                                        
+⏺ Update(.env.example)                             
+  ⎿  Added 5 lines                                                                                                      
+       3  OPENAI_API_KEY=your_openai_api_key                                                                          
+       4  # DB_PATH=bot.db  (optional, defaults to bot.db in working directory)                                         
+       5  # TELEGRAM_CHAT_ID=123456789  (your chat id — required for the daily to-do digest at 08:00)                   
+       6 +                                                                                                              
+       7 +# Google Calendar integration (optional)                                                                      
+       8 +# GOOGLE_CREDENTIALS_FILE=/path/to/credentials.json                                                           
+       9 +# GOOGLE_TOKEN_FILE=token.json                                                                                
+      10 +# GOOGLE_CALENDAR_ID=pierre.aldag@gmail.com                                                                   
+
+⏺ Let me verify the final state of the key files:   
+                                                                                          
+⏺ Bash(python -c "import ast, sys                   
+      for f in ['calendar_integration.py', 'scheduler.py', 'bot.py', 'config.py']:…)                                    
+  ⎿  Error: Exit code 127
+     (eval):1: command not found: python                                                                                
+                                                                                                                        
+⏺ Bash(python3 -c "                                                                                                     
+      import ast, sys…)                                                                                               
+  ⎿  OK: calendar_integration.py                                                                                        
+     OK: scheduler.py                                                                                                   
+     OK: bot.py                                                                                                         
+     OK: config.py                                                                                                      
+                                                                                                                        
+⏺ All files parse cleanly. Here's a summary of every change:                                                            
+                                                                                                                        
+  ---                                                                                                                   
+  requirements.txt — added google-auth-oauthlib and google-api-python-client.                                           
+                                                                                                                        
+  config.py — three new fields: google_credentials_file, google_token_file (default token.json), google_calendar_id     
+  (default pierre.aldag@gmail.com), each settable via .env.                                                             
+                                                                                                                        
+  calendar_integration.py (new) — self-contained module with:                                                           
+  - get_auth_url() — generates the consent URL using the OOB redirect (no web server needed)                            
+  - exchange_code() — exchanges the user-pasted code for a token and writes token.json                                  
+  - fetch_today_events() / fetch_today_events_async() — fetches today's events; raises RuntimeError("no_token") when the
+   token file is missing or can't be refreshed                                                                          
+  - format_events() — formats to the requested 📅 Termine heute: / • HH:MM — … style                                    
+                                                                                                                        
+  scheduler.py — set_config(config) method added; _send_daily_digest now fetches calendar events first, appends the todo
+   list, sends both as one message. If the token is missing it notifies the user to run /auth_calendar instead of       
+  crashing.                                                                                                             
+                                                                                                                        
+  bot.py —                                                                                                              
+  - handle_auth_calendar — /auth_calendar command: generates and sends the auth URL, sets awaiting_calendar_code flag 
+  - handle_calendar_code — intercepts the next text message when the flag is set, exchanges the code, clears the flag   
+  - handle_text — checks the flag first and routes to code handler if active                                         
+  - _post_init — calls sched.set_config(config) so the scheduler has credentials paths                                  
+  - build_app — registers CommandHandler("auth_calendar", handle_auth_calendar)                                         
+                                                                                                                        
+  Setup instructions for you:                                                                                           
+  1. pip install -r requirements.txt                                                                                    
+  2. In Google Cloud Console: create OAuth 2.0 credentials → Desktop app → download credentials.json                    
+  3. Set GOOGLE_CREDENTIALS_FILE=/path/to/credentials.json in .env                                                    
+  4. Send /auth_calendar to the bot, visit the URL, paste the code back → done                                          
+                                                                                                                        
+✻ Churned for 2m 33s                                                                                                    
+                                                                                                                        
+❯ Fix Google OAuth in calendar_integration.py. The error is Missing code verifier — Google requires PKCE for Desktop    
+app OAuth flows. Fix by using google_auth_oauthlib.flow.Flow with code_challenge_method='S256'. Specifically: when      
+creating the flow, enable PKCE by passing autogenerate_code_verifier=True to flow.authorization_url(). The code         
+verifier must be stored and reused in fetch_token(). Make sure the same flow object is used for both generating the URL 
+ and exchanging the code — store it in a module-level variable between the two calls."                                  
+                                                                                            
+  Read 1 file (ctrl+o to expand)                                                                                        
+                                                                                                                      
+⏺ Update(calendar_integration.py)
+  ⎿  Added 20 lines, removed 12 lines                                                                                   
+      15  _SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+      16  _TZ = ZoneInfo("Europe/Berlin")                                                                               
+      17                                                                                                                
+      18 +# Stored between get_auth_url() and exchange_code() so the PKCE code verifier                                 
+      19 +# that was generated for the auth URL is reused when fetching the token.                                      
+      20 +_pending_flow: Flow | None = None                                                                             
+      21                                                                                                              
+      22 +                                                                                                       
+      23  # ── OAuth helpers ──────────────────────────────────────────────────────────────
+      24  
+      25  def get_auth_url(credentials_file: str, token_file: str) -> str:
+      22 -    """Return the OAuth consent URL. Raises if credentials_file is missing."""                         
+      23 -    flow = _make_flow(credentials_file, token_file)                                                    
+      24 -    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")                      
+      26 +    """Return the OAuth consent URL (PKCE/S256). Raises if credentials_file is missing."""             
+      27 +    global _pending_flow                                                                               
+      28 +    flow = Flow.from_client_secrets_file(credentials_file, scopes=_SCOPES)                             
+      29 +    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"                                                    
+      30 +    auth_url, _ = flow.authorization_url(                                                              
+      31 +        prompt="consent",                                                                              
+      32 +        access_type="offline",                                                                         
+      33 +        autogenerate_code_verifier=True,                                                               
+      34 +    )                                                                                                  
+      35 +    _pending_flow = flow                                                                               
+      36      return auth_url
+      37  
+      38  
+      39  def exchange_code(code: str, credentials_file: str, token_file: str) -> None:
+      40      """Exchange an auth code for a token and persist it to token_file."""
+      30 -    flow = _make_flow(credentials_file, token_file)                                                    
+      31 -    flow.fetch_token(code=code)                                                                        
+      32 -    _save_token(flow.credentials, token_file)                                                          
+      41 +    global _pending_flow                                                                               
+      42 +    if _pending_flow is None:                                                                          
+      43 +        raise RuntimeError("No pending OAuth flow — call get_auth_url() first.")                       
+      44 +    _pending_flow.fetch_token(code=code)                                                               
+      45 +    _save_token(_pending_flow.credentials, token_file)                                                 
+      46      logger.info("Google Calendar token saved to %s", token_file)
+      47 +    _pending_flow = None                                                                               
+      48  
+      49  
+      36 -def _make_flow(credentials_file: str, token_file: str) -> Flow:                                        
+      37 -    flow = Flow.from_client_secrets_file(credentials_file, scopes=_SCOPES)                             
+      38 -    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"                                                    
+      39 -    return flow                                                                                        
+      40 -                                                                                                       
+      41 -                                                                                                       
+      50  def _load_credentials(token_file: str) -> Credentials | None:
+      51      """Load and refresh credentials from token_file. Returns None if unavailable."""
+      52      import os
+
+⏺ Bash(python3 -c "import ast; ast.parse(open('calendar_integration.py').read()); print('OK')")
+  ⎿  OK                                                               
+
+⏺ Fixed. The key changes:                                                                                               
+                                                                      
+  - _pending_flow — module-level variable that holds the flow object between the two calls.                             
+  - get_auth_url() — creates the flow once, passes autogenerate_code_verifier=True to authorization_url() (this         
+  generates a PKCE S256 challenge and stashes the verifier inside the flow object), then saves the flow to              
+  _pending_flow.                                                                                                        
+  - exchange_code() — reuses _pending_flow instead of creating a new flow, so the verifier Google expects is present    
+  when fetch_token() is called. Clears _pending_flow after success.                                                     
+  
+❯ The Google OAuth redirect is going to a Google approval page instead of localhost:8080. This means the redirect_uri   
+in the OAuth credentials is not set to http://localhost:8080. Fix the OAuth flow to use the 'urn:ietf:wg:oauth:2.0:oob' 
+ redirect is truly deprecated, so instead use a different approach: start a temporary local HTTP server on port 8080    
+that listens for the callback, automatically captures the code, and shuts down. This way the user just clicks the link  
+and the bot handles everything automatically — no manual URL copying needed. Use Python's built-in http.server module   
+in a background thread.                                                                                                 
+                                                               
+  Read 1 file (ctrl+o to expand)                                                                                        
+                                                                                                                      
+⏺ Now I'll rewrite the OAuth section. The new approach: run_auth_flow_async() starts a local HTTP server in a background
+   thread, returns the auth URL, then waits (with a timeout) for Google to redirect back with the code, exchanges it    
+  automatically, and saves the token — all without any user copy-pasting.          
+                                                                                                                        
+⏺ Update(calendar_integration.py)                                                                                       
+  ⎿  Added 67 lines, removed 18 lines                                                                                   
+       1  """Google Calendar integration — OAuth2 flow and event fetching."""                                           
+       2  import asyncio                                                                                                
+       3  import logging
+       4 +import threading                                                                                              
+       5  from datetime import datetime, timezone                                                                     
+       6 +from http.server import BaseHTTPRequestHandler, HTTPServer                                                    
+       7 +from urllib.parse import parse_qs, urlparse                                                                 
+       8  from zoneinfo import ZoneInfo
+       9  
+      10  from google.oauth2.credentials import Credentials
+     ...
+      17  
+      18  _SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+      19  _TZ = ZoneInfo("Europe/Berlin")
+      20 +_CALLBACK_PORT = 8080                                                                                  
+      21 +_CALLBACK_TIMEOUT = 300  # seconds to wait for the user to complete the browser flow                   
+      22  
+      18 -# Stored between get_auth_url() and exchange_code() so the PKCE code verifier                          
+      19 -# that was generated for the auth URL is reused when fetching the token.                               
+      20 -_pending_flow: Flow | None = None                                                                      
+      23  
+      24 +# ── OAuth — local callback server ──────────────────────────────────────────────                      
+      25  
+      23 -# ── OAuth helpers ──────────────────────────────────────────────────────────────                      
+      26 +async def run_auth_flow_async(credentials_file: str, token_file: str) -> str:                          
+      27 +    """                                                                                                
+      28 +    Start a temporary HTTP server on localhost:8080, build the consent URL,                            
+      29 +    and wait for Google to redirect back with the auth code.  The code is                              
+      30 +    exchanged automatically and the token is saved to token_file.                                      
+      31  
+      25 -def get_auth_url(credentials_file: str, token_file: str) -> str:                                       
+      26 -    """Return the OAuth consent URL (PKCE/S256). Raises if credentials_file is missing."""             
+      27 -    global _pending_flow                                                                               
+      32 +    Returns the auth URL that the user must open in a browser.                                         
+      33 +    Raises TimeoutError if no callback arrives within _CALLBACK_TIMEOUT seconds.                       
+      34 +    """                                                                                                
+      35      flow = Flow.from_client_secrets_file(credentials_file, scopes=_SCOPES)
+      29 -    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"                                                    
+      36 +    flow.redirect_uri = f"http://localhost:{_CALLBACK_PORT}"                                           
+      37 +                                                                                                       
+      38      auth_url, _ = flow.authorization_url(
+      39          prompt="consent",
+      40          access_type="offline",
+      41          autogenerate_code_verifier=True,
+      42      )
+      35 -    _pending_flow = flow                                                                               
+      36 -    return auth_url                                                                                    
+      43  
+      44 +    # Future that the callback handler will resolve with the auth code                                 
+      45 +    loop = asyncio.get_event_loop()                                                                    
+      46 +    code_future: asyncio.Future[str] = loop.create_future()                                            
+      47  
+      39 -def exchange_code(code: str, credentials_file: str, token_file: str) -> None:                          
+      40 -    """Exchange an auth code for a token and persist it to token_file."""                              
+      41 -    global _pending_flow                                                                               
+      42 -    if _pending_flow is None:                                                                          
+      43 -        raise RuntimeError("No pending OAuth flow — call get_auth_url() first.")                       
+      44 -    _pending_flow.fetch_token(code=code)                                                               
+      45 -    _save_token(_pending_flow.credentials, token_file)                                                 
+      48 +    class _CallbackHandler(BaseHTTPRequestHandler):                                                    
+      49 +        def do_GET(self) -> None:                                                                      
+      50 +            qs = parse_qs(urlparse(self.path).query)                                                   
+      51 +            code = qs.get("code", [None])[0]                                                           
+      52 +            error = qs.get("error", [None])[0]                                                         
+      53 +                                                                                                       
+      54 +            if error:                                                                                  
+      55 +                body = f"Auth error: {error}. You can close this tab.".encode()                        
+      56 +                self.send_response(400)                                                                
+      57 +            elif code:                                                                                 
+      58 +                body = b"Authorized! You can close this tab."                                          
+      59 +                self.send_response(200)                                                                
+      60 +            else:                                                                                      
+      61 +                body = b"Missing code. You can close this tab."                                        
+      62 +                self.send_response(400)                                                                
+      63 +                code = None                                                                            
+      64 +                                                                                                       
+      65 +            self.send_header("Content-Type", "text/plain; charset=utf-8")                              
+      66 +            self.send_header("Content-Length", str(len(body)))                                         
+      67 +            self.end_headers()                                                                         
+      68 +            self.wfile.write(body)                                                                     
+      69 +                                                                                                       
+      70 +            if not code_future.done():                                                                 
+      71 +                if code:                                                                               
+      72 +                    loop.call_soon_threadsafe(code_future.set_result, code)                            
+      73 +                else:                                                                                  
+      74 +                    loop.call_soon_threadsafe(                                                         
+      75 +                        code_future.set_exception,                                                     
+      76 +                        RuntimeError(error or "no_code"),                                              
+      77 +                    )                                                                                  
+      78 +                                                                                                       
+      79 +        def log_message(self, fmt: str, *args: object) -> None:  # suppress access logs                
+      80 +            pass                                                                                       
+      81 +                                                                                                       
+      82 +    server = HTTPServer(("localhost", _CALLBACK_PORT), _CallbackHandler)                               
+      83 +    thread = threading.Thread(target=server.serve_forever, daemon=True)                                
+      84 +    thread.start()                                                                                     
+      85 +    logger.info("OAuth callback server listening on port %d", _CALLBACK_PORT)                          
+      86 +                                                                                                       
+      87 +    try:                                                                                               
+      88 +        code = await asyncio.wait_for(code_future, timeout=_CALLBACK_TIMEOUT)                          
+      89 +    finally:                                                                                           
+      90 +        server.shutdown()                                                                              
+      91 +        logger.info("OAuth callback server stopped")                                                   
+      92 +                                                                                                       
+      93 +    flow.fetch_token(code=code)                                                                        
+      94 +    _save_token(flow.credentials, token_file)                                                          
+      95      logger.info("Google Calendar token saved to %s", token_file)
+      47 -    _pending_flow = None                                                                               
+      96 +    return auth_url                                                                                    
+      97  
+      98  
+      99  def _load_credentials(token_file: str) -> Credentials | None:
+
+⏺ Now update bot.py — handle_auth_calendar needs to use the new async flow, and the manual code handler is no longer
+  needed:                                                                                 
+
+  Read 1 file (ctrl+o to expand)                                                                                        
+           
+⏺ Update(bot.py)                                                                                                        
+  ⎿  Added 40 lines, removed 21 lines                                                                                 
+      155              parse_mode="Markdown",                                             
+      156          )                                                                                                    
+      157          return                                                                                               
+      158 -    try:                                                                                                     
+      159 -        auth_url = calendar_integration.get_auth_url(                                                        
+      160 -            config.google_credentials_file, config.google_token_file                                         
+      161 -        )                                                                                                  
+      162 -    except Exception:                                                                                 
+      163 -        logger.exception("Failed to generate Google auth URL")                                        
+      164 -        await update.message.reply_text("Fehler beim Generieren der Auth-URL. Bitte Logs prüfen.")    
+      165 -        return                                                                                        
+      158  
+      167 -    context.bot_data["awaiting_calendar_code"] = True                                                 
+      159      await update.message.reply_text(
+      169 -        f"Bitte diese URL öffnen und autorisieren:\n\n{auth_url}\n\n"                                 
+      170 -        "Dann den angezeigten Code hier einschicken.",                                                
+      160 +        "Starte OAuth-Flow — bitte warten…\n"                                                         
+      161 +        "Ein lokaler Server auf Port 8080 wird gestartet. Öffne gleich die Auth-URL im Browser."      
+      162      )
+      163  
+      164 +    async def _run_flow() -> None:                                                                    
+      165 +        try:                                                                                          
+      166 +            auth_url = await calendar_integration.run_auth_flow_async(                                
+      167 +                config.google_credentials_file, config.google_token_file                              
+      168 +            )                                                                                         
+      169 +            # run_auth_flow_async only returns after the token is saved                               
+      170 +            await context.bot.send_message(                                                           
+      171 +                chat_id=update.effective_chat.id,                                                     
+      172 +                text="✅ Google Calendar erfolgreich verbunden!",                                     
+      173 +            )                                                                                         
+      174 +        except TimeoutError:                                                                          
+      175 +            logger.warning("OAuth flow timed out")                                                    
+      176 +            await context.bot.send_message(                                                           
+      177 +                chat_id=update.effective_chat.id,                                                     
+      178 +                text="⏰ Timeout: Auth-URL wurde nicht rechtzeitig geöffnet. Bitte /auth\\_calendar er
+          +neut versuchen.",                                                                                     
+      179 +                parse_mode="Markdown",                                                                
+      180 +            )                                                                                         
+      181 +        except Exception:                                                                             
+      182 +            logger.exception("OAuth flow failed")                                                     
+      183 +            await context.bot.send_message(                                                           
+      184 +                chat_id=update.effective_chat.id,                                                     
+      185 +                text="❌ Fehler beim OAuth-Flow. Bitte Logs prüfen und /auth\\_calendar erneut versuch
+          +en.",                                                                                                 
+      186 +            )                                                                                         
+      187  
+      174 -async def handle_calendar_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:           
+      175 -    """Receive the OAuth code the user pastes after visiting the auth URL."""                         
+      176 -    config: Config = context.bot_data["config"]                                                       
+      177 -    code = update.message.text.strip()                                                                
+      188 +    # Generate and send the URL immediately, then let the flow run in the background                  
+      189      try:
+      179 -        calendar_integration.exchange_code(code, config.google_credentials_file, config.google_token_f
+          -ile)                                                                                                  
+      190 +        flow_task = asyncio.create_task(_run_flow())                                                  
+      191 +        # Give the server a moment to bind, then fetch the URL from a fresh flow                      
+      192 +        # preview so the user can open it. The real URL is sent once the task starts.                 
+      193 +        # Instead: send the URL before awaiting — re-derive it just for display.                      
+      194 +        import google_auth_oauthlib.flow as _gflow                                                    
+      195 +        _preview = _gflow.Flow.from_client_secrets_file(config.google_credentials_file, scopes=["https
+          +://www.googleapis.com/auth/calendar.readonly"])                                                       
+      196 +        _preview.redirect_uri = "http://localhost:8080"                                               
+      197 +        preview_url, _ = _preview.authorization_url(prompt="consent", access_type="offline")          
+      198 +        await update.message.reply_text(                                                              
+      199 +            f"Bitte diese URL im Browser öffnen:\n\n{preview_url}\n\n"                                
+      200 +            "Nach der Autorisierung erhältst du hier automatisch eine Bestätigung."                   
+      201 +        )                                                                                             
+      202      except Exception:
+      181 -        logger.exception("Failed to exchange Google auth code")                                       
+      182 -        await update.message.reply_text("Ungültiger Code oder Fehler beim Austausch. Bitte /auth\\_cal
+          -endar erneut versuchen.", parse_mode="Markdown")                                                      
+      183 -        return                                                                                        
+      184 -    context.bot_data.pop("awaiting_calendar_code", None)                                              
+      185 -    await update.message.reply_text("✅ Google Calendar erfolgreich verbunden!")                      
+      203 +        logger.exception("Failed to generate preview auth URL")                                       
+      204 +        await update.message.reply_text("Fehler beim Generieren der Auth-URL. Bitte Logs prüfen.")    
+      205  
+      206  
+      207  async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+⏺ Wait — there's a bug in my approach. The preview URL is generated from a separate flow with a different PKCE verifier
+  than the one the server's flow uses. The user would click the wrong URL. Let me fix this properly: run_auth_flow_async
+   should return the auth URL immediately and resolve a future when done, so the caller can send the URL before waiting.
+                                                                                                                        
+⏺ Update(calendar_integration.py)                 
+  ⎿  Added 34 lines, removed 36 lines                                                                                   
+      23                                                                                                              
+      24  # ── OAuth — local callback server ──────────────────────────────────────────────                             
+      25  
+      26 -async def run_auth_flow_async(credentials_file: str, token_file: str) -> str:                                 
+      26 +def start_auth_flow(credentials_file: str, token_file: str) -> tuple[str, "asyncio.Future[None]"]:          
+      27      """                                                                                                       
+      28 -    Start a temporary HTTP server on localhost:8080, build the consent URL,                                 
+      29 -    and wait for Google to redirect back with the auth code.  The code is                              
+      30 -    exchanged automatically and the token is saved to token_file.                                      
+      28 +    Start a temporary HTTP server on localhost:8080 and return (auth_url, done_future).                
+      29  
+      32 -    Returns the auth URL that the user must open in a browser.                                         
+      33 -    Raises TimeoutError if no callback arrives within _CALLBACK_TIMEOUT seconds.                       
+      30 +    The caller should:                                                                                 
+      31 +      1. Send auth_url to the user immediately.                                                        
+      32 +      2. Await done_future (with a timeout) to know when the token has been saved.                     
+      33 +                                                                                                       
+      34 +    The server shuts itself down after the first callback.                                             
+      35 +    Raises TimeoutError (from the caller's await) if no callback arrives in time.                      
+      36      """
+      37      flow = Flow.from_client_secrets_file(credentials_file, scopes=_SCOPES)
+      38      flow.redirect_uri = f"http://localhost:{_CALLBACK_PORT}"
+     ...
+      43          autogenerate_code_verifier=True,
+      44      )
+      45  
+      44 -    # Future that the callback handler will resolve with the auth code                                 
+      46      loop = asyncio.get_event_loop()
+      46 -    code_future: asyncio.Future[str] = loop.create_future()                                            
+      47 +    # Resolved with None on success, set_exception on error                                            
+      48 +    done_future: asyncio.Future[None] = loop.create_future()                                           
+      49  
+      50      class _CallbackHandler(BaseHTTPRequestHandler):
+      51          def do_GET(self) -> None:
+     ...
+      53              code = qs.get("code", [None])[0]
+      54              error = qs.get("error", [None])[0]
+      55  
+      54 -            if error:                                                                                  
+      55 -                body = f"Auth error: {error}. You can close this tab.".encode()                        
+      56 -                self.send_response(400)                                                                
+      57 -            elif code:                                                                                 
+      58 -                body = b"Authorized! You can close this tab."                                          
+      59 -                self.send_response(200)                                                                
+      56 +            if code:                                                                                   
+      57 +                status, body = 200, b"Authorized! You can close this tab."                             
+      58              else:
+      61 -                body = b"Missing code. You can close this tab."                                        
+      62 -                self.send_response(400)                                                                
+      63 -                code = None                                                                            
+      59 +                status = 400                                                                           
+      60 +                body = f"Auth error: {error or 'no_code'}. You can close this tab.".encode()           
+      61  
+      62 +            self.send_response(status)                                                                 
+      63              self.send_header("Content-Type", "text/plain; charset=utf-8")
+      64              self.send_header("Content-Length", str(len(body)))
+      65              self.end_headers()
+      66              self.wfile.write(body)
+      67  
+      70 -            if not code_future.done():                                                                 
+      71 -                if code:                                                                               
+      72 -                    loop.call_soon_threadsafe(code_future.set_result, code)                            
+      73 -                else:                                                                                  
+      74 -                    loop.call_soon_threadsafe(                                                         
+      75 -                        code_future.set_exception,                                                     
+      76 -                        RuntimeError(error or "no_code"),                                              
+      77 -                    )                                                                                  
+      68 +            # Exchange the code and save the token, then signal the future                             
+      69 +            def _finish() -> None:                                                                     
+      70 +                if done_future.done():                                                                 
+      71 +                    return                                                                             
+      72 +                try:                                                                                   
+      73 +                    if not code:                                                                       
+      74 +                        raise RuntimeError(error or "no_code")                                         
+      75 +                    flow.fetch_token(code=code)                                                        
+      76 +                    _save_token(flow.credentials, token_file)                                          
+      77 +                    logger.info("Google Calendar token saved to %s", token_file)                       
+      78 +                    done_future.set_result(None)                                                       
+      79 +                except Exception as exc:                                                               
+      80 +                    done_future.set_exception(exc)                                                     
+      81  
+      79 -        def log_message(self, fmt: str, *args: object) -> None:  # suppress access logs                
+      82 +            loop.call_soon_threadsafe(_finish)                                                         
+      83 +            # Ask the server to stop after this request                                                
+      84 +            threading.Thread(target=server.shutdown, daemon=True).start()                              
+      85 +                                                                                                       
+      86 +        def log_message(self, fmt: str, *args: object) -> None:                                        
+      87              pass
+      88  
+      89      server = HTTPServer(("localhost", _CALLBACK_PORT), _CallbackHandler)
+     ...
+       91      thread.start()
+       92      logger.info("OAuth callback server listening on port %d", _CALLBACK_PORT)
+       93  
+       87 -    try:                                                                                              
+       88 -        code = await asyncio.wait_for(code_future, timeout=_CALLBACK_TIMEOUT)                         
+       89 -    finally:                                                                                          
+       90 -        server.shutdown()                                                                             
+       91 -        logger.info("OAuth callback server stopped")                                                  
+       94 +    return auth_url, done_future                                                                      
+       95  
+       93 -    flow.fetch_token(code=code)                                                                       
+       94 -    _save_token(flow.credentials, token_file)                                                         
+       95 -    logger.info("Google Calendar token saved to %s", token_file)                                      
+       96 -    return auth_url                                                                                   
+       96  
+       98 -                                                                                                      
+       97  def _load_credentials(token_file: str) -> Credentials | None:
+       98      """Load and refresh credentials from token_file. Returns None if unavailable."""
+       99      import os
+
+⏺ Now rewrite handle_auth_calendar cleanly — no preview flow, no redundant code handler:
+                                                                                          
+⏺ Update(bot.py)                                  
+  ⎿  Added 15 lines, removed 25 lines                                                                                   
+      156          )
+      157          return                                                                                               
+      158                                                                                                             
+      159 +    try:                                                                                                     
+      160 +        auth_url, done_future = calendar_integration.start_auth_flow(                                      
+      161 +            config.google_credentials_file, config.google_token_file                                  
+      162 +        )                                                                                             
+      163 +    except Exception:                                                                                 
+      164 +        logger.exception("Failed to start OAuth flow")                                                
+      165 +        await update.message.reply_text("Fehler beim Starten des OAuth-Flows. Bitte Logs prüfen.")    
+      166 +        return                                                                                        
+      167 +                                                                                                      
+      168      await update.message.reply_text(
+      160 -        "Starte OAuth-Flow — bitte warten…\n"                                                         
+      161 -        "Ein lokaler Server auf Port 8080 wird gestartet. Öffne gleich die Auth-URL im Browser."      
+      169 +        f"Bitte diese URL im Browser öffnen:\n\n{auth_url}\n\n"                                       
+      170 +        "Nach der Autorisierung erhältst du hier automatisch eine Bestätigung."                       
+      171      )
+      172  
+      164 -    async def _run_flow() -> None:                                                                    
+      173 +    async def _wait_for_token() -> None:                                                              
+      174          try:
+      166 -            auth_url = await calendar_integration.run_auth_flow_async(                                
+      167 -                config.google_credentials_file, config.google_token_file                              
+      168 -            )                                                                                         
+      169 -            # run_auth_flow_async only returns after the token is saved                               
+      175 +            await asyncio.wait_for(done_future, timeout=calendar_integration._CALLBACK_TIMEOUT)       
+      176              await context.bot.send_message(
+      177                  chat_id=update.effective_chat.id,
+      178                  text="✅ Google Calendar erfolgreich verbunden!",
+     ...
+      181              logger.warning("OAuth flow timed out")
+      182              await context.bot.send_message(
+      183                  chat_id=update.effective_chat.id,
+      178 -                text="⏰ Timeout: Auth-URL wurde nicht rechtzeitig geöffnet. Bitte /auth\\_calendar er
+          -neut versuchen.",                                                                                     
+      184 +                text="⏰ Timeout: Autorisierung nicht abgeschlossen. Bitte /auth\\_calendar erneut ver
+          +suchen.",                                                                                             
+      185                  parse_mode="Markdown",
+      186              )
+      187          except Exception:
+     ...
+      191                  text="❌ Fehler beim OAuth-Flow. Bitte Logs prüfen und /auth\\_calendar erneut versuch
+           en.",
+      192              )
+      193  
+      188 -    # Generate and send the URL immediately, then let the flow run in the background                  
+      189 -    try:                                                                                              
+      190 -        flow_task = asyncio.create_task(_run_flow())                                                  
+      191 -        # Give the server a moment to bind, then fetch the URL from a fresh flow                      
+      192 -        # preview so the user can open it. The real URL is sent once the task starts.                 
+      193 -        # Instead: send the URL before awaiting — re-derive it just for display.                      
+      194 -        import google_auth_oauthlib.flow as _gflow                                                    
+      195 -        _preview = _gflow.Flow.from_client_secrets_file(config.google_credentials_file, scopes=["https
+          -://www.googleapis.com/auth/calendar.readonly"])                                                       
+      196 -        _preview.redirect_uri = "http://localhost:8080"                                               
+      197 -        preview_url, _ = _preview.authorization_url(prompt="consent", access_type="offline")          
+      198 -        await update.message.reply_text(                                                              
+      199 -            f"Bitte diese URL im Browser öffnen:\n\n{preview_url}\n\n"                                
+      200 -            "Nach der Autorisierung erhältst du hier automatisch eine Bestätigung."                   
+      201 -        )                                                                                             
+      202 -    except Exception:                                                                                 
+      203 -        logger.exception("Failed to generate preview auth URL")                                       
+      204 -        await update.message.reply_text("Fehler beim Generieren der Auth-URL. Bitte Logs prüfen.")    
+      194 +    asyncio.create_task(_wait_for_token())                                                            
+      195  
+      196  
+      197  async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+⏺ Also remove the now-unused handle_calendar_code and the awaiting_calendar_code check in handle_text:
+                                                                                          
+  Read 1 file (ctrl+o to expand)    
+                                                                                                                        
+⏺ Update(bot.py)                                  
+  ⎿  Removed 5 lines                                                                                                    
+      108                                                                                                             
+      109                                                                                                               
+      110  async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:                           
+      111 -    # If we're mid-OAuth flow, treat the message as the auth code                                            
+      112 -    if context.bot_data.get("awaiting_calendar_code"):                                                       
+      113 -        await handle_calendar_code(update, context)                                                        
+      114 -        return                                                                                               
+      115 -                                                                                                           
+      111      text = update.message.text
+      112      lower = text.lower()
+      113      if any(kw in lower for kw in _COMPLETION_KEYWORDS):
+
+⏺ Bash(python3 -c "                               
+      import ast, sys…)                                                                   
+  ⎿  OK: calendar_integration.py
+     OK: bot.py                                                                                                         
+                                                 
+⏺ Clean. Here's what changed and why each decision was made:                                                            
+                                                                                                                      
+  calendar_integration.py — replaced the two-function OOB design with start_auth_flow():                                
+  - Creates one Flow object with redirect_uri = "http://localhost:8080" and autogenerate_code_verifier=True (PKCE S256) 
+  - Starts the HTTPServer in a daemon thread                                                                            
+  - Returns (auth_url, done_future) immediately — the URL is from the same flow that owns the PKCE verifier, so they    
+  always match                                                                                                          
+  - The _CallbackHandler captures the code, calls flow.fetch_token(code=code) (using the verifier already stored inside 
+  flow), saves the token, resolves done_future, then shuts down the server in a separate thread to avoid deadlocking    
+  inside do_GET                                                                                                         
+                                                                                                                      
+  bot.py — handle_auth_calendar:                                                                                        
+  - Calls start_auth_flow() synchronously to get the URL and future                                                     
+  - Sends the URL to the user immediately                                                                               
+  - Spawns _wait_for_token() as a background task that awaits done_future with the 5-minute timeout and sends the       
+  confirmation (or error) message when done                                                                             
+  - Removed handle_calendar_code and the awaiting_calendar_code flag entirely — no longer needed                        
+   
+✻ Sautéed for 2m 10s                                                                                                    
+                                                                                                                      
+❯ The OAuth callback approach with localhost:8080 won't work because the bot runs on a remote server, not the user's    
+local machine. The browser redirects to localhost:8080 which is the user's Mac, not the server. Fix this by using the   
+server's public IP as the redirect URI instead: use http://91.98.135.25:8080 as the redirect_uri. The HTTP server on    
+the VPS listens on 0.0.0.0:8080, captures the callback from Google, and the user's browser follows the redirect to the  
+server's public IP. Also add this URI to the Google Cloud Console OAuth credentials authorized redirect URIs.           
+                                                                                                                
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)     
+                                                                                                                        
+⏺ Two lines to change:                                                                                                
+                                                                                                                        
+⏺ Update(calendar_integration.py)          
+  ⎿  Added 1 line                                                                                                       
+      17                                                                                                                
+      18  _SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]                                               
+      19  _TZ = ZoneInfo("Europe/Berlin")                                                                               
+      20 +_CALLBACK_HOST = "91.98.135.25"                                                                               
+      21  _CALLBACK_PORT = 8080                                                                                       
+      22  _CALLBACK_TIMEOUT = 300  # seconds to wait for the user to complete the browser flow                          
+      23                                                                                                              
+
+⏺ Update(calendar_integration.py)
+  ⎿  Added 1 line, removed 1 line          
+      36      Raises TimeoutError (from the caller's await) if no callback arrives in time.
+      37      """                                                                                                       
+      38      flow = Flow.from_client_secrets_file(credentials_file, scopes=_SCOPES)
+      39 -    flow.redirect_uri = f"http://localhost:{_CALLBACK_PORT}"                                                  
+      39 +    flow.redirect_uri = f"http://{_CALLBACK_HOST}:{_CALLBACK_PORT}"                                         
+      40                                                                                                                
+      41      auth_url, _ = flow.authorization_url(                                                                   
+      42          prompt="consent",
+
+⏺ Update(calendar_integration.py)
+  ⎿  Added 1 line, removed 1 line          
+      87          def log_message(self, fmt: str, *args: object) -> None:
+      88              pass                                                                                              
+      89  
+      90 -    server = HTTPServer(("localhost", _CALLBACK_PORT), _CallbackHandler)                                      
+      90 +    server = HTTPServer(("0.0.0.0", _CALLBACK_PORT), _CallbackHandler)                                      
+      91      thread = threading.Thread(target=server.serve_forever, daemon=True)                                       
+      92      thread.start()                                                                                          
+      93      logger.info("OAuth callback server listening on port %d", _CALLBACK_PORT)
+
+⏺ Also update the docstring:
+                                           
+⏺ Update(calendar_integration.py)
+  ⎿  Added 2 lines, removed 1 line                                                                                      
+      26               
+      27  def start_auth_flow(credentials_file: str, token_file: str) -> tuple[str, "asyncio.Future[None]"]:            
+      28      """                                                                                                     
+      29 -    Start a temporary HTTP server on localhost:8080 and return (auth_url, done_future).                       
+      29 +    Start a temporary HTTP server on 0.0.0.0:8080 and return (auth_url, done_future).                       
+      30 +    Google redirects the browser to http://91.98.135.25:8080 (the VPS public IP).                             
+      31                                                                                                              
+      32      The caller should:
+      33        1. Send auth_url to the user immediately.
+
+⏺ Done. Three changes: 
+                                           
+  - _CALLBACK_HOST = "91.98.135.25" — public IP used in the redirect URI sent to Google                                 
+  - flow.redirect_uri → http://91.98.135.25:8080 — must match what's registered in Google Cloud Console                 
+  - HTTPServer(("0.0.0.0", 8080), ...) — server binds on all interfaces so it accepts the inbound redirect from Google  
+                                                                                                                        
+  Don't forget: add http://91.98.135.25:8080 to the Authorized redirect URIs in your OAuth 2.0 client in Google Cloud   
+  Console, and make sure port 8080 is open in the VPS firewall for the duration of the auth flow.                       
+                                                                                                                        
+❯ The Google OAuth redirect approach with a public IP doesn't work because Google doesn't allow IP addresses as         
+redirect URIs for web apps. Go back to Desktop app credentials and use the OOB flow workaround: use                     
+redirect_uri='urn:ietf:wg:oauth:2.0:oob' but handle the PKCE requirement by NOT using autogenerate_code_verifier (PKCE  
+is not compatible with OOB). Instead use a simple flow without PKCE. The user will see a page with a code they copy and 
+ paste back to the bot. Update the bot message to say: 'Öffne diesen Link, autorisiere den Zugriff, und schicke mir den 
+ angezeigten Code zurück.                                                                                               
+                                                                                                                        
+  Read 2 files (ctrl+o to expand)                                                                                       
+                                                                                                                      
+⏺ Now I have the full picture. Ripping out the HTTP server entirely and going back to OOB:
+                                                                                                                        
+⏺ Update(calendar_integration.py)                                          
+  ⎿  Added 26 lines, removed 72 lines                                                                                   
+       1  """Google Calendar integration — OAuth2 flow and event fetching."""                                           
+       2  import asyncio                                                                                                
+       3  import logging                                                                                                
+       4 -import threading                                                                                              
+       4  from datetime import datetime, timezone                                                                     
+       6 -from http.server import BaseHTTPRequestHandler, HTTPServer                                                    
+       7 -from urllib.parse import parse_qs, urlparse                                                                 
+       5  from zoneinfo import ZoneInfo
+       6  
+       7  from google.oauth2.credentials import Credentials
+     ...
+       14  
+       15  _SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+       16  _TZ = ZoneInfo("Europe/Berlin")
+       20 -_CALLBACK_HOST = "91.98.135.25"                                                                       
+       21 -_CALLBACK_PORT = 8080                                                                                 
+       22 -_CALLBACK_TIMEOUT = 300  # seconds to wait for the user to complete the browser flow                  
+       17  
+       18 +# Held between get_auth_url() and exchange_code() so the same flow object                             
+       19 +# (and its internal state) is reused for the token exchange.                                          
+       20 +_pending_flow: Flow | None = None                                                                     
+       21  
+       25 -# ── OAuth — local callback server ──────────────────────────────────────────────                     
+       22  
+       27 -def start_auth_flow(credentials_file: str, token_file: str) -> tuple[str, "asyncio.Future[None]"]:    
+       28 -    """                                                                                               
+       29 -    Start a temporary HTTP server on 0.0.0.0:8080 and return (auth_url, done_future).                 
+       30 -    Google redirects the browser to http://91.98.135.25:8080 (the VPS public IP).                     
+       23 +# ── OAuth — OOB (Desktop app) flow ────────────────────────────────────────────                      
+       24  
+       32 -    The caller should:                                                                                
+       33 -      1. Send auth_url to the user immediately.                                                       
+       34 -      2. Await done_future (with a timeout) to know when the token has been saved.                    
+       35 -                                                                                                      
+       36 -    The server shuts itself down after the first callback.                                            
+       37 -    Raises TimeoutError (from the caller's await) if no callback arrives in time.                     
+       25 +def get_auth_url(credentials_file: str) -> str:                                                       
+       26      """
+       27 +    Build and return the Google consent URL using the OOB redirect.                                   
+       28 +    The same flow object is stored in _pending_flow for exchange_code() to reuse.                     
+       29 +    No PKCE — OOB Desktop app credentials do not support it.                                          
+       30 +    """                                                                                               
+       31 +    global _pending_flow                                                                              
+       32      flow = Flow.from_client_secrets_file(credentials_file, scopes=_SCOPES)
+       40 -    flow.redirect_uri = f"http://{_CALLBACK_HOST}:{_CALLBACK_PORT}"                                   
+       33 +    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"                                                   
+       34 +    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")                     
+       35 +    _pending_flow = flow                                                                              
+       36 +    return auth_url                                                                                   
+       37  
+       42 -    auth_url, _ = flow.authorization_url(                                                             
+       43 -        prompt="consent",                                                                             
+       44 -        access_type="offline",                                                                        
+       45 -        autogenerate_code_verifier=True,                                                              
+       46 -    )                                                                                                 
+       38  
+       48 -    loop = asyncio.get_event_loop()                                                                   
+       49 -    # Resolved with None on success, set_exception on error                                           
+       50 -    done_future: asyncio.Future[None] = loop.create_future()                                          
+       39 +def exchange_code(code: str, token_file: str) -> None:                                                
+       40 +    """                                                                                               
+       41 +    Exchange the code the user pasted from the Google consent page.                                   
+       42 +    Must be called after get_auth_url() — reuses the stored flow object.                              
+       43 +    """                                                                                               
+       44 +    global _pending_flow                                                                              
+       45 +    if _pending_flow is None:                                                                         
+       46 +        raise RuntimeError("No pending OAuth flow — call get_auth_url() first.")                      
+       47 +    _pending_flow.fetch_token(code=code)                                                              
+       48 +    _save_token(_pending_flow.credentials, token_file)                                                
+       49 +    logger.info("Google Calendar token saved to %s", token_file)                                      
+       50 +    _pending_flow = None                                                                              
+       51  
+       52 -    class _CallbackHandler(BaseHTTPRequestHandler):                                                   
+       53 -        def do_GET(self) -> None:                                                                     
+       54 -            qs = parse_qs(urlparse(self.path).query)                                                  
+       55 -            code = qs.get("code", [None])[0]                                                          
+       56 -            error = qs.get("error", [None])[0]                                                        
+       52  
+       58 -            if code:                                                                                  
+       59 -                status, body = 200, b"Authorized! You can close this tab."                            
+       60 -            else:                                                                                     
+       61 -                status = 400                                                                          
+       62 -                body = f"Auth error: {error or 'no_code'}. You can close this tab.".encode()          
+       63 -                                                                                                      
+       64 -            self.send_response(status)                                                                
+       65 -            self.send_header("Content-Type", "text/plain; charset=utf-8")                             
+       66 -            self.send_header("Content-Length", str(len(body)))                                        
+       67 -            self.end_headers()                                                                        
+       68 -            self.wfile.write(body)                                                                    
+       69 -                                                                                                      
+       70 -            # Exchange the code and save the token, then signal the future                            
+       71 -            def _finish() -> None:                                                                    
+       72 -                if done_future.done():                                                                
+       73 -                    return                                                                            
+       74 -                try:                                                                                  
+       75 -                    if not code:                                                                      
+       76 -                        raise RuntimeError(error or "no_code")                                        
+       77 -                    flow.fetch_token(code=code)                                                       
+       78 -                    _save_token(flow.credentials, token_file)                                         
+       79 -                    logger.info("Google Calendar token saved to %s", token_file)                      
+       80 -                    done_future.set_result(None)                                                      
+       81 -                except Exception as exc:                                                              
+       82 -                    done_future.set_exception(exc)                                                    
+       83 -                                                                                                      
+       84 -            loop.call_soon_threadsafe(_finish)                                                        
+       85 -            # Ask the server to stop after this request                                               
+       86 -            threading.Thread(target=server.shutdown, daemon=True).start()                             
+       87 -                                                                                                      
+       88 -        def log_message(self, fmt: str, *args: object) -> None:                                       
+       89 -            pass                                                                                      
+       90 -                                                                                                      
+       91 -    server = HTTPServer(("0.0.0.0", _CALLBACK_PORT), _CallbackHandler)                                
+       92 -    thread = threading.Thread(target=server.serve_forever, daemon=True)                               
+       93 -    thread.start()                                                                                    
+       94 -    logger.info("OAuth callback server listening on port %d", _CALLBACK_PORT)                         
+       95 -                                                                                                      
+       96 -    return auth_url, done_future                                                                      
+       97 -                                                                                                      
+       98 -                                                                                                      
+       53  def _load_credentials(token_file: str) -> Credentials | None:
+       54      """Load and refresh credentials from token_file. Returns None if unavailable."""
+       55      import os
+
+⏺ Now update bot.py — replace the server-based handler with the OOB code-paste flow:
+                                                                                          
+⏺ Update(bot.py)                                 
+  ⎿  Added 5 lines, removed 30 lines                                                                                    
+      152          return                        
+      153                                                                                                               
+      154      try:                                                                                                   
+      155 -        auth_url, done_future = calendar_integration.start_auth_flow(                                        
+      156 -            config.google_credentials_file, config.google_token_file                                       
+      157 -        )                                                                                                    
+      155 +        auth_url = calendar_integration.get_auth_url(config.google_credentials_file)                       
+      156      except Exception:
+      159 -        logger.exception("Failed to start OAuth flow")                                                
+      160 -        await update.message.reply_text("Fehler beim Starten des OAuth-Flows. Bitte Logs prüfen.")    
+      157 +        logger.exception("Failed to generate Google auth URL")                                        
+      158 +        await update.message.reply_text("Fehler beim Generieren der Auth-URL. Bitte Logs prüfen.")    
+      159          return
+      160  
+      161 +    context.bot_data["awaiting_calendar_code"] = True                                                 
+      162      await update.message.reply_text(
+      164 -        f"Bitte diese URL im Browser öffnen:\n\n{auth_url}\n\n"                                       
+      165 -        "Nach der Autorisierung erhältst du hier automatisch eine Bestätigung."                       
+      163 +        f"Öffne diesen Link, autorisiere den Zugriff, und schicke mir den angezeigten Code zurück:\n\n
+          +{auth_url}"                                                                                           
+      164      )
+      165  
+      168 -    async def _wait_for_token() -> None:                                                              
+      169 -        try:                                                                                          
+      170 -            await asyncio.wait_for(done_future, timeout=calendar_integration._CALLBACK_TIMEOUT)       
+      171 -            await context.bot.send_message(                                                           
+      172 -                chat_id=update.effective_chat.id,                                                     
+      173 -                text="✅ Google Calendar erfolgreich verbunden!",                                     
+      174 -            )                                                                                         
+      175 -        except TimeoutError:                                                                          
+      176 -            logger.warning("OAuth flow timed out")                                                    
+      177 -            await context.bot.send_message(                                                           
+      178 -                chat_id=update.effective_chat.id,                                                     
+      179 -                text="⏰ Timeout: Autorisierung nicht abgeschlossen. Bitte /auth\\_calendar erneut ver
+          -suchen.",                                                                                             
+      180 -                parse_mode="Markdown",                                                                
+      181 -            )                                                                                         
+      182 -        except Exception:                                                                             
+      183 -            logger.exception("OAuth flow failed")                                                     
+      184 -            await context.bot.send_message(                                                           
+      185 -                chat_id=update.effective_chat.id,                                                     
+      186 -                text="❌ Fehler beim OAuth-Flow. Bitte Logs prüfen und /auth\\_calendar erneut versuch
+          -en.",                                                                                                 
+      187 -            )                                                                                         
+      166  
+      189 -    asyncio.create_task(_wait_for_token())                                                            
+      190 -                                                                                                      
+      191 -                                                                                                      
+      167  async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+      168      query = update.callback_query
+      169      await query.answer()
+
+⏺ Now restore the code-paste handler in handle_text and add handle_calendar_code:
+                                                                                          
+⏺ Update(bot.py)                                 
+  ⎿  Added 20 lines                                                                                                     
+      107  )
+      108                                                                                                               
+      109                                                                                                             
+      110 +async def handle_calendar_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:                  
+      111 +    config: Config = context.bot_data["config"]                                                            
+      112 +    code = update.message.text.strip()                                                                
+      113 +    try:                                                                                              
+      114 +        calendar_integration.exchange_code(code, config.google_token_file)                            
+      115 +    except Exception:                                                                                 
+      116 +        logger.exception("Failed to exchange Google auth code")                                       
+      117 +        await update.message.reply_text(                                                              
+      118 +            "Ungültiger Code oder Fehler beim Austausch. Bitte /auth\\_calendar erneut versuchen.",   
+      119 +            parse_mode="Markdown",                                                                    
+      120 +        )                                                                                             
+      121 +        return                                                                                        
+      122 +    context.bot_data.pop("awaiting_calendar_code", None)                                              
+      123 +    await update.message.reply_text("✅ Google Calendar erfolgreich verbunden!")                      
+      124 +                                                                                                      
+      125 +                                                                                                      
+      126  async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+      127 +    if context.bot_data.get("awaiting_calendar_code"):                                                
+      128 +        await handle_calendar_code(update, context)                                                   
+      129 +        return                                                                                        
+      130 +                                                                                                      
+      131      text = update.message.text
+      132      lower = text.lower()
+      133      if any(kw in lower for kw in _COMPLETION_KEYWORDS):
+
+⏺ Bash(python3 -c "                              
+      import ast, sys…)                                                                   
+  ⎿  OK: calendar_integration.py
+     OK: bot.py                                                                                                         
+                                                 
+⏺ Done. Summary of changes:                                                                                             
+                                                                                                                      
+  calendar_integration.py — stripped back to the simple OOB flow:                                                       
+  - Removed all HTTP server code (threading, http.server, urllib.parse)                                                 
+  - get_auth_url(credentials_file) — creates the flow with redirect_uri="urn:ietf:wg:oauth:2.0:oob", no                 
+  autogenerate_code_verifier, stores flow in _pending_flow                                                              
+  - exchange_code(code, token_file) — reuses _pending_flow to call fetch_token(code=code), saves token, clears          
+  _pending_flow                                                                                                       
+                                                                                                                        
+  bot.py:                                                                                                             
+  - handle_auth_calendar — calls get_auth_url(), sets awaiting_calendar_code, sends the exact message: "Öffne diesen    
+  Link, autorisiere den Zugriff, und schicke mir den angezeigten Code zurück:"                                          
+  - handle_calendar_code — restored: reads the pasted code, calls exchange_code(), sends confirmation
+  - handle_text — checks awaiting_calendar_code flag first and routes to the code handler                               
+                                                                                                                        
+✻ Worked for 1m 3s                                                                                                      
+                                                                                                                        
+❯ Add a get_calendar_events tool to ai.py that the bot can call when the user asks about their calendar (e.g. 'Was sind 
+ meine heutigen Termine?', 'Habe ich morgen Termine?'). The tool should accept a date parameter (ISO date string,       
+default today) and call calendar_integration.fetch_today_events() with that date. Return the formatted events. Add it   
+to the tools list and system prompt. The tool should work for today, tomorrow, and any specific date the user           
+mentions."                                                                                                              
+                      
+  Read 2 files (ctrl+o to expand)                                                                                       
+                                                                                                                      
+⏺ Now I have everything I need. Three changes: update fetch_today_events to accept a date parameter, add the tool
+  definition and handler in ai.py, and add a system prompt line.                                                        
+                                                                                           
+⏺ Update(calendar_integration.py)                                                                                       
+  ⎿  Added 11 lines, removed 6 lines                                                                                    
+      73                                                                                                                
+      74  # ── Event fetching ─────────────────────────────────────────────────────────────                             
+      75                                                                                                              
+      76 -def fetch_today_events(token_file: str, calendar_id: str) -> list[dict]:                                      
+      76 +def fetch_today_events(token_file: str, calendar_id: str, date: str | None = None) -> list[dict]:           
+      77      """                                                                                                       
+      78 -    Return today's events as a list of dicts with keys 'start' (HH:MM or 'ganztägig')                       
+      79 -    and 'summary'. Raises RuntimeError if the token is missing/invalid.                                
+      78 +    Return events for the given ISO date (YYYY-MM-DD, Europe/Berlin) as a list of                      
+      79 +    dicts with keys 'start' (HH:MM or 'ganztägig') and 'summary'.                                      
+      80 +    Defaults to today if date is None. Raises RuntimeError("no_token") if not authorised.              
+      81      """
+      82 +    from datetime import date as date_type                                                             
+      83      creds = _load_credentials(token_file)
+      84      if creds is None:
+      85          raise RuntimeError("no_token")
+      86  
+      85 -    now_berlin = datetime.now(_TZ)                                                                     
+      86 -    day_start = now_berlin.replace(hour=0, minute=0, second=0, microsecond=0)                          
+      87 -    day_end = now_berlin.replace(hour=23, minute=59, second=59, microsecond=0)                         
+      87 +    if date:                                                                                           
+      88 +        day = datetime.fromisoformat(date).replace(tzinfo=_TZ)                                         
+      89 +    else:                                                                                              
+      90 +        day = datetime.now(_TZ)                                                                        
+      91 +    day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)                                 
+      92 +    day_end = day.replace(hour=23, minute=59, second=59, microsecond=0)                                
+      93  
+      94      time_min = day_start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+      95      time_max = day_end.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+⏺ Also update fetch_today_events_async to pass through the date, and make format_events date-aware:
+                                                                                           
+⏺ Update(calendar_integration.py)         
+  ⎿  Added 5 lines, removed 5 lines                                                                                     
+      124      return events              
+      125                                                                                                               
+      126                                                                                                             
+      127 -async def fetch_today_events_async(token_file: str, calendar_id: str) -> list[dict]:                         
+      127 +async def fetch_today_events_async(token_file: str, calendar_id: str, date: str | None = None) -> list     
+          +[dict]:                                                                                                      
+      128      """Async wrapper — runs the blocking API call in a thread pool."""                                     
+      129      return await asyncio.get_event_loop().run_in_executor(
+      130 -        None, fetch_today_events, token_file, calendar_id                                             
+      130 +        None, fetch_today_events, token_file, calendar_id, date                                       
+      131      )
+      132  
+      133  
+      134 -def format_events(events: list[dict]) -> str:                                                         
+      134 +def format_events(events: list[dict], date_label: str = "heute") -> str:                              
+      135      if not events:
+      136 -        return "📅 Heute keine Termine"                                                               
+      137 -    lines = ["📅 *Termine heute:*"]                                                                   
+      136 +        return f"📅 {date_label.capitalize()} keine Termine"                                          
+      137 +    lines = [f"📅 *Termine {date_label}:*"]                                                           
+      138      for e in events:
+      139          lines.append(f"• {e['start']} — {e['summary']}")
+      140      return "\n".join(lines)
+
+⏺ Now add the tool definition to _build_tools in ai.py:
+                                                                                          
+⏺ Update(ai.py)                            
+  ⎿  Added 24 lines, removed 1 line                                                                                     
+      184              "required": ["to", "subject", "body"],
+      185          },                                                                                                   
+      186      },                                                                                                     
+      187 +    {                                                                                                        
+      188 +        "name": "get_calendar_events",                                                                     
+      189 +        "description": (                                                                                     
+      190 +            "Fetch the user's Google Calendar events for a given date. "                                   
+      191 +            "Call this whenever the user asks about their schedule, appointments, or Termine — "      
+      192 +            "for today, tomorrow, or any specific date."                                              
+      193 +        ),                                                                                            
+      194 +        "input_schema": {                                                                             
+      195 +            "type": "object",                                                                         
+      196 +            "properties": {                                                                           
+      197 +                "date": {                                                                             
+      198 +                    "type": "string",                                                                 
+      199 +                    "description": (                                                                  
+      200 +                        "ISO date string (YYYY-MM-DD) for the day to look up. "                       
+      201 +                        "Use the pre-resolved dates from the system prompt: "                         
+      202 +                        f"heute={datetime.now(_TZ).strftime('%Y-%m-%d')}, "                           
+      203 +                        "morgen=tomorrow_iso, etc. Defaults to today if omitted."                     
+      204 +                    ),                                                                                
+      205 +                },                                                                                    
+      206 +            },                                                                                        
+      207 +            "required": [],                                                                           
+      208 +        },                                                                                            
+      209 +    },                                                                                                
+      210  ]  # end of _build_tools return value
+      211  
+      189 -_CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "snooze_todo", "save_note", "search_not
+          -es", "research", "send_email"}                                                                        
+      212 +_CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "snooze_todo", "save_note", "search_not
+          +es", "research", "send_email", "get_calendar_events"}                                                 
+      213  
+      214  HAIKU_MODEL = "claude-haiku-4-5-20251001"
+      215  
+
+⏺ The date description references tomorrow_iso as a literal string — fix that to use the actual parameter:
+                                                                                          
+⏺ Update(ai.py)                            
+  ⎿  Added 3 lines, removed 3 lines                                                                                     
+      197                  "date": {
+      198                      "type": "string",                                                                        
+      199                      "description": (                                                                       
+      200 -                        "ISO date string (YYYY-MM-DD) for the day to look up. "                              
+      201 -                        "Use the pre-resolved dates from the system prompt: "                              
+      200 +                        f"ISO date string (YYYY-MM-DD) for the day to look up. "                      
+      201 +                        f"Use the pre-resolved dates from the system prompt: "                        
+      202                          f"heute={datetime.now(_TZ).strftime('%Y-%m-%d')}, "
+      203 -                        "morgen=tomorrow_iso, etc. Defaults to today if omitted."                     
+      203 +                        f"morgen={tomorrow_iso}. Defaults to today if omitted."                       
+      204                      ),
+      205                  },
+      206              },
+
+⏺ Now add the tool handler in _execute_inner. Let me find where send_email is handled to insert after it:
+                                                                                          
+  Read 1 file (ctrl+o to expand)    
+                                                                                                                        
+⏺ Update(ai.py)                            
+  ⎿  Added 30 lines                                                                                                     
+      593              logger.exception("send_email tool failed")                                                     
+      594              return {"ok": False, "error": str(exc)}                                                          
+      595                                                                                                               
+      596 +    if name == "get_calendar_events":                                                                        
+      597 +        if not config or not config.google_credentials_file:                                                 
+      598 +            return {"ok": False, "error": "Google Calendar nicht konfiguriert (GOOGLE_CREDENTIALS_FILE       
+          + fehlt)."}                                                                                                 
+      599 +        import calendar_integration                                                                   
+      600 +        date = inputs.get("date") or None                                                             
+      601 +        try:                                                                                          
+      602 +            events = await asyncio.get_event_loop().run_in_executor(                                  
+      603 +                None, calendar_integration.fetch_today_events,                                        
+      604 +                config.google_token_file, config.google_calendar_id, date,                            
+      605 +            )                                                                                         
+      606 +        except RuntimeError as exc:                                                                   
+      607 +            if str(exc) == "no_token":                                                                
+      608 +                return {"ok": False, "error": "Google Calendar nicht verbunden. Bitte /auth_calendar a
+          +usführen."}                                                                                           
+      609 +            raise                                                                                     
+      610 +        now = datetime.now(_TZ)                                                                       
+      611 +        today_iso = now.strftime("%Y-%m-%d")                                                          
+      612 +        tomorrow_iso = (now + timedelta(days=1)).strftime("%Y-%m-%d")                                 
+      613 +        if not date or date == today_iso:                                                             
+      614 +            label = "heute"                                                                           
+      615 +        elif date == tomorrow_iso:                                                                    
+      616 +            label = "morgen"                                                                          
+      617 +        else:                                                                                         
+      618 +            label = f"am {date}"                                                                      
+      619 +        return {                                                                                      
+      620 +            "ok": True,                                                                               
+      621 +            "date": date or today_iso,                                                                
+      622 +            "formatted": calendar_integration.format_events(events, label),                           
+      623 +            "events": events,                                                                         
+      624 +        }                                                                                             
+      625 +                                                                                                      
+      626      return {"error": f"unknown tool: {name}"}
+
+⏺ Now add the system prompt line:            
+                                                                                          
+⏺ Update(ai.py)                              
+  ⎿  Added 2 lines                                                                                                      
+      308          "When they choose 'löschen', call complete_todo with the id.\n"
+      309          "- save_note / search_notes: for short notes, references, follow-ups\n"                              
+      310          "- save_note / search_notes: for notes, thoughts, ideas, reflections, references, follow-ups\n     
+           "                                                                                                            
+      311 +        "- get_calendar_events: call when the user asks about their schedule, Termine, or appointments     
+          + for any date. "                                                                                             
+      312 +        "Pass 'date' as YYYY-MM-DD using the pre-resolved dates above. Return the 'formatted' field as     
+          +-is.\n"                                                                                               
+      313          "- research: for web lookups; return the result as-is\n"
+      314          f"- send_email: for sending emails.{email_hint}\n\n"
+      315          "When confirming a reminder, always use the 'scheduled_for_display' field from the tool result
+            "
+
+⏺ Bash(python3 -c "                           
+      import ast, sys…)                                                                   
+  ⎿  OK: calendar_integration.py
+     OK: ai.py                                                                                                          
+                                              
+⏺ Done. Here's what changed:                                                                                            
+                                                                                                                      
+  calendar_integration.py                                                                                               
+  - fetch_today_events(token_file, calendar_id, date=None) — now accepts an ISO date string; defaults to today when     
+  omitted                                                                                                               
+  - fetch_today_events_async — passes date through                                                                      
+  - format_events(events, date_label="heute") — uses the label in the output so "morgen keine Termine" / "am 2026-05-01 
+  keine Termine" work correctly                                                                                         
+                                                                                                                        
+  ai.py                                                                                                                 
+  - New tool get_calendar_events in _build_tools with an optional date parameter (description pre-filled with today's   
+  and tomorrow's dates from the runtime context)                                                                        
+  - Added to _CLIENT_TOOLS                      
+  - Handler in _execute_inner: resolves the date label (heute/morgen/am X), calls fetch_today_events in a thread        
+  executor, returns formatted + raw events; handles no_token gracefully                                                 
+  - System prompt: one-line rule to call get_calendar_events for any schedule/Termine question and return the formatted 
+  field as-is                                                                                                           
+                                                                                                                        
+✻ Churned for 1m 18s                                                                                                  
+                                                                                                                        
+❯ Also, change the scheduler from 8am to 6am every morning.                                                             
+                                                            
+⏺ Update(scheduler.py)                                                                                                  
+  ⎿  Added 1 line, removed 1 line                                                                                     
+      52          self._scheduler.add_job(
+      53              self._send_daily_digest,                                                                          
+      54              trigger="cron",
+      55 -            hour=8,                                                                                           
+      55 +            hour=6,                                                                                         
+      56              minute=0,                                                                                         
+      57              timezone=_TZ,                                                                                   
+      58              args=[chat_id, db_path],
+
+⏺ Done. Daily digest now fires at 06:00 Europe/Berlin.
+                                                                                
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯                                                                                                                       
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle)                              Update available! Run: brew upgrade claude-code  
+                                                                                                                        
+

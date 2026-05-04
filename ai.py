@@ -15,9 +15,50 @@ from scheduler import ReminderScheduler
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-5"
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
+SONNET_MODEL = "claude-sonnet-4-20250514"
 _EMBED_MODEL = "voyage-3"
 _TZ = ZoneInfo("Europe/Berlin")
+
+# Keywords that signal the request needs Sonnet-level reasoning.
+_SONNET_KEYWORDS = (
+    "recherche", "research", "suche in meinen notizen", "was habe ich",
+    "kalender", "calendar", "termine", "appointment",
+)
+# Tools whose presence in prior turns indicates a complex multi-step session.
+_COMPLEX_TOOLS = {"search_notes", "research", "get_calendar_events"}
+
+
+def _extract_last_user_text(messages: list[dict]) -> str:
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return " ".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+    return ""
+
+
+def _select_model(messages: list[dict]) -> str:
+    """Return Haiku for simple actions, Sonnet when reasoning or complexity needed."""
+    user_text = _extract_last_user_text(messages).lower()
+    if any(kw in user_text for kw in _SONNET_KEYWORDS):
+        return SONNET_MODEL
+    # If this session already used a complex tool, stay on Sonnet.
+    for m in messages:
+        if m.get("role") == "assistant":
+            for block in m.get("content", []):
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_use"
+                    and block.get("name") in _COMPLEX_TOOLS
+                ):
+                    return SONNET_MODEL
+    return HAIKU_MODEL
 
 # web_search_20250305 is a server-side tool — Anthropic executes it internally.
 # The other three are client-side tools that this code executes.
@@ -211,8 +252,6 @@ def _build_tools(now_iso: str, tomorrow_iso: str, tz_offset: str) -> list:
 
 _CLIENT_TOOLS = {"create_todo", "list_todos", "complete_todo", "snooze_todo", "save_note", "search_notes", "research", "send_email", "get_calendar_events"}
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
-
 
 async def _embed(text: str, voyage_api_key: str, input_type: str = "document") -> list[float]:
     import voyageai
@@ -339,6 +378,7 @@ async def run(
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%S") + tz_offset_iso
     tomorrow_iso = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     tools = _build_tools(now_iso, tomorrow_iso, tz_offset_iso)
+    model = _select_model(messages)
 
     while True:
         # Trim to last 10 messages to prevent long histories from diluting tool instructions.
@@ -346,10 +386,10 @@ async def run(
         api_messages = messages[-10:] if len(messages) > 10 else messages
         logger.info(
             "Sending API request | model=%s | tools=%d | messages=%d (trimmed from %d) | tool_names=%s",
-            MODEL, len(tools), len(api_messages), len(messages), [t["name"] for t in tools],
+            model, len(tools), len(api_messages), len(messages), [t["name"] for t in tools],
         )
         response = await client.messages.create(
-            model=MODEL,
+            model=model,
             max_tokens=2048,
             system=_system_prompt(config.report_email if config else ""),
             tools=tools,
