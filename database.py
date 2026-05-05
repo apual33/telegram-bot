@@ -47,6 +47,11 @@ def init_db(db_path: str) -> None:
             conn.execute("ALTER TABLE notes ADD COLUMN embedding TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
+        # Add telegram_message_id column to todos if not present (idempotent)
+        try:
+            conn.execute("ALTER TABLE todos ADD COLUMN telegram_message_id INTEGER")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.commit()
 
 
@@ -127,6 +132,20 @@ def get_due_reminders(db_path: str) -> list[dict]:
 def mark_reminded(db_path: str, todo_id: int) -> None:
     with _conn(db_path) as con:
         con.execute("UPDATE todos SET reminded = 1 WHERE id = ?", (todo_id,))
+
+
+def set_todo_message_id(db_path: str, todo_id: int, message_id: int) -> None:
+    with _conn(db_path) as con:
+        con.execute("UPDATE todos SET telegram_message_id = ? WHERE id = ?", (message_id, todo_id))
+
+
+def get_todo_by_message_id(db_path: str, message_id: int) -> dict | None:
+    with _conn(db_path) as con:
+        row = con.execute(
+            "SELECT id, chat_id, title FROM todos WHERE telegram_message_id = ? AND done = 0",
+            (message_id,),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def snooze_todo(db_path: str, todo_id: int, minutes: int) -> dict | None:

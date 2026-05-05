@@ -99,11 +99,12 @@ class ReminderScheduler:
         )
 
     async def _fire(self, todo_id: int, chat_id: int, title: str) -> None:
-        await self._bot.send_message(
+        msg = await self._bot.send_message(
             chat_id=chat_id,
             text=f"⏰ *Erinnerung:* {title}",
             parse_mode="Markdown",
         )
+        database.set_todo_message_id(self._db_path, todo_id, msg.message_id)
         database.mark_reminded(self._db_path, todo_id)
         # Save to history so the AI has todo_id in context for snooze/delete replies
         history_text = f"⏰ Erinnerung: {title} [todo_id:{todo_id}]"

@@ -15,7 +15,9 @@
       "Bash(.venv/bin/python -c \"import database; database.init_db\\('bot.db'\\); print\\('Tables:', __import__\\('sqlite3'\\).connect\\('bot.db'\\).execute\\(\\\\\"SELECT name FROM sqlite_master WHERE type='table'\\\\\"\\).fetchall\\(\\)\\)\")",
       "Bash(.venv/bin/python migrate.py)",
       "Bash(.venv/bin/python -c \"import ai, bot, scheduler; print\\('All modules import OK'\\)\")",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(.venv/bin/python:*)"
     ]
   }
 }

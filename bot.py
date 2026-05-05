@@ -16,6 +16,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    MessageReactionHandler,
     filters,
 )
 
@@ -184,6 +185,28 @@ async def handle_auth_calendar(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    reaction = update.message_reaction
+    if not reaction:
+        return
+
+    thumbs_up = any(getattr(r, "emoji", None) == "👍" for r in reaction.new_reaction)
+    if not thumbs_up:
+        return
+
+    db_path: str = context.bot_data["db_path"]
+    todo = database.get_todo_by_message_id(db_path, reaction.message_id)
+    if not todo:
+        return
+
+    result = database.complete_todo(db_path, todo["id"])
+    if result:
+        await context.bot.send_message(
+            chat_id=reaction.chat.id,
+            text=f'✅ "{result["title"]}" erledigt!',
+        )
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -255,5 +278,6 @@ def build_app(config: Config) -> Application:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageReactionHandler(handle_reaction))
 
     return app

@@ -1,5 +1,7 @@
 import logging
 
+from telegram import Update
+
 from config import Config
 from bot import build_app
 
@@ -12,7 +14,7 @@ logging.basicConfig(
 def main() -> None:
     config = Config.from_env()
     app = build_app(config)
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
