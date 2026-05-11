@@ -95,7 +95,6 @@ class ReminderScheduler:
         await self._bot.send_message(
             chat_id=chat_id,
             text="\n\n".join(parts),
-            parse_mode="Markdown",
         )
 
     async def _fire(self, todo_id: int, chat_id: int, title: str) -> None:
