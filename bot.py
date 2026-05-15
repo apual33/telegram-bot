@@ -107,6 +107,18 @@ _COMPLETION_KEYWORDS = (
     "bitte löschen",
 )
 
+_CREATION_KEYWORDS = (
+    "erinnere mich",
+    "füge hinzu",
+    "fuge hinzu",
+    "merk dir",
+    "erstelle",
+    "neue erinnerung",
+    "to-do",
+    "todo",
+    "Erinnerung"
+)
+
 
 async def handle_calendar_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     config: Config = context.bot_data["config"]
@@ -133,6 +145,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lower = text.lower()
     if any(kw in lower for kw in _COMPLETION_KEYWORDS):
         text = "WICHTIG: Rufe ZUERST list_todos auf, dann complete_todo. Keine Ausnahmen.\n" + text
+    elif any(kw in lower for kw in _CREATION_KEYWORDS):
+        text = "WICHTIG: Rufe create_todo auf. Keine Ausnahmen.\n" + text
     if research.is_research_request(text):
         await _research_pipeline(update, context, text)
     else:
