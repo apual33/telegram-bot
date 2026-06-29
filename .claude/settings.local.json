@@ -17,7 +17,8 @@
       "Bash(.venv/bin/python -c \"import ai, bot, scheduler; print\\('All modules import OK'\\)\")",
       "Bash(python3:*)",
       "Bash(python:*)",
-      "Bash(.venv/bin/python:*)"
+      "Bash(.venv/bin/python:*)",
+      "Bash(ls:*)"
     ]
   }
 }

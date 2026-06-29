@@ -250,6 +250,7 @@ async def _post_init(app: Application) -> None:
 
     sched = ReminderScheduler(app.bot, config.db_path)
     sched.set_config(config)
+    sched.set_anthropic_client(app.bot_data["anthropic_client"])
     sched.start()
     app.bot_data["scheduler"] = sched
 

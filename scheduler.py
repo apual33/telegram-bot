@@ -1,7 +1,9 @@
 import logging
+import random
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from anthropic import AsyncAnthropic
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Bot
 
@@ -22,6 +24,9 @@ class ReminderScheduler:
 
     def set_config(self, config: Config) -> None:
         self._config = config
+
+    def set_anthropic_client(self, client: AsyncAnthropic) -> None:
+        self._anthropic = client
 
     def start(self) -> None:
         self._scheduler.start()
@@ -92,10 +97,58 @@ class ReminderScheduler:
         else:
             parts.append("✅ Keine offenen To-Dos")
 
+        # ── Daily impulse ─────────────────────────────────────────────────────
+        impulse = await self._generate_daily_impulse()
+        if impulse:
+            parts.append(f"🌱 Impuls für heute:\n{impulse}")
+
+        digest_text = "\n\n".join(parts)
         await self._bot.send_message(
             chat_id=chat_id,
-            text="\n\n".join(parts),
+            text=digest_text,
         )
+
+        # Save impulse to history so the AI can respond to follow-ups
+        if impulse:
+            database.append_history(db_path, chat_id, "assistant", digest_text)
+
+    async def _generate_daily_impulse(self) -> str | None:
+        """Generate a daily reflection question or challenge via Claude Sonnet."""
+        if not hasattr(self, "_anthropic") or not self._anthropic:
+            logger.warning("Anthropic client not set — skipping daily impulse")
+            return None
+
+        category = random.choice(["reflection", "challenge"])
+        if category == "reflection":
+            category_instruction = (
+                "Generiere eine tiefe, persönliche Reflexionsfrage. "
+                "Die Frage soll zum Nachdenken anregen und ehrliche Selbstreflexion fördern. "
+                "Beispiel-Niveau (aber nicht kopieren): 'Wann hast du zuletzt etwas getan, das dich wirklich stolz gemacht hat?'"
+            )
+        else:
+            category_instruction = (
+                "Generiere eine konkrete kleine Tagesaufgabe/Challenge. "
+                "Sie soll entweder aus der Komfortzone holen oder eine Beziehung stärken. "
+                "Beispiel-Niveau (aber nicht kopieren): 'Schreib heute jemandem eine Nachricht, dem du lange nicht geschrieben hast.'"
+            )
+
+        try:
+            response = await self._anthropic.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=256,
+                system=(
+                    "Du bist ein einfühlsamer persönlicher Coach. "
+                    "Generiere entweder eine tiefe Reflexionsfrage oder eine konkrete Tagesaufgabe. "
+                    "Keine Klischees. Keine oberflächlichen Fragen. "
+                    "Sei kreativ, spezifisch und persönlich. "
+                    "Antworte nur mit dem Impuls selbst, kein Intro, keine Erklärung."
+                ),
+                messages=[{"role": "user", "content": category_instruction}],
+            )
+            return response.content[0].text.strip()
+        except Exception:
+            logger.exception("Failed to generate daily impulse")
+            return None
 
     async def _fire(self, todo_id: int, chat_id: int, title: str) -> None:
         msg = await self._bot.send_message(
