@@ -16,7 +16,7 @@ from scheduler import ReminderScheduler
 logger = logging.getLogger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
-SONNET_MODEL = "claude-sonnet-4-20250514"
+SONNET_MODEL = "claude-sonnet-4-6"
 _EMBED_MODEL = "voyage-3"
 _TZ = ZoneInfo("Europe/Berlin")
 
