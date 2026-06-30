@@ -221,6 +221,14 @@ async def handle_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
 
+async def handle_test_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    sched: ReminderScheduler = context.bot_data["scheduler"]
+    db_path: str = context.bot_data["db_path"]
+    chat_id = update.effective_chat.id
+    await update.message.reply_text("Sending daily digest now…")
+    await sched._send_daily_digest(chat_id, db_path)
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -290,6 +298,7 @@ def build_app(config: Config) -> Application:
     app.bot_data["config"] = config
 
     app.add_handler(CommandHandler("auth_calendar", handle_auth_calendar))
+    app.add_handler(CommandHandler("test_digest", handle_test_digest))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
