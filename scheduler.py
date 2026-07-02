@@ -102,6 +102,11 @@ class ReminderScheduler:
         if impulse:
             parts.append(f"🌱 Impuls für heute:\n{impulse}")
 
+        # ── Daily question ────────────────────────────────────────────────────
+        question = await self._generate_daily_question()
+        if question:
+            parts.append(f"💬 Frage für heute:\n{question}")
+
         digest_text = "\n\n".join(parts)
         await self._bot.send_message(
             chat_id=chat_id,
@@ -148,6 +153,30 @@ class ReminderScheduler:
             return response.content[0].text.strip()
         except Exception:
             logger.exception("Failed to generate daily impulse")
+            return None
+
+    async def _generate_daily_question(self) -> str | None:
+        """Generate a daily question to ask someone, via Claude Sonnet."""
+        if not hasattr(self, "_anthropic") or not self._anthropic:
+            logger.warning("Anthropic client not set — skipping daily question")
+            return None
+
+        try:
+            response = await self._anthropic.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=256,
+                system=(
+                    "Du bist ein einfühlsamer Coach. Generiere eine einzige Frage "
+                    "die man jemandem stellen kann — einem Freund, Partner, Kollegen "
+                    "oder Familienmitglied — um etwas Neues und Bedeutungsvolles über "
+                    "ihn herauszufinden. Keine Smalltalk-Fragen. Kreativ, spezifisch, "
+                    "einladend. Nur die Frage selbst, kein Intro."
+                ),
+                messages=[{"role": "user", "content": "Generiere eine Frage für heute."}],
+            )
+            return response.content[0].text.strip()
+        except Exception:
+            logger.exception("Failed to generate daily question")
             return None
 
     async def _fire(self, todo_id: int, chat_id: int, title: str) -> None:
