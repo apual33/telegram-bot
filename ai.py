@@ -380,10 +380,21 @@ async def run(
     tools = _build_tools(now_iso, tomorrow_iso, tz_offset_iso)
     model = _select_model(messages)
 
+    # Track whether the next API call must be forced to call list_todos.
+    _force_list_todos = False
+
     while True:
         # Trim to last 10 messages to prevent long histories from diluting tool instructions.
         # Always keep the last message (current user turn) and trim from the front.
         api_messages = messages[-10:] if len(messages) > 10 else messages
+
+        # Build optional tool_choice to force list_todos after create/complete.
+        api_kwargs: dict = {}
+        if _force_list_todos:
+            api_kwargs["tool_choice"] = {"type": "tool", "name": "list_todos"}
+            logger.info("Forcing tool_choice=list_todos for verification")
+            _force_list_todos = False
+
         logger.info(
             "Sending API request | model=%s | tools=%d | messages=%d (trimmed from %d) | tool_names=%s",
             model, len(tools), len(api_messages), len(messages), [t["name"] for t in tools],
@@ -394,6 +405,7 @@ async def run(
             system=_system_prompt(config.report_email if config else ""),
             tools=tools,
             messages=api_messages,
+            **api_kwargs,
         )
 
         # Serialize all content blocks to plain dicts so they can be re-sent
@@ -433,6 +445,13 @@ async def run(
             # stop_reason was "tool_use" but only server tools fired; return text
             logger.warning("stop_reason=tool_use but no client-side tool calls found — returning text without execution")
             return "\n".join(text_parts) or "(no response)"
+
+        # Check if any of the calls are create_todo or complete_todo — if so,
+        # the next iteration must force list_todos for verification.
+        _mutating_tools = {"create_todo", "complete_todo"}
+        if any(call.name in _mutating_tools for call in client_calls):
+            _force_list_todos = True
+            logger.info("Detected mutating todo tool — will force list_todos on next iteration")
 
         tool_results = []
         for call in client_calls:
@@ -499,6 +518,12 @@ async def _execute_inner(
         logger.info("create_todo: calling database.create_todo | db=%s | chat_id=%d | title=%r | remind_at=%s", db_path, chat_id, inputs["title"], remind_at)
         tid = database.create_todo(db_path, chat_id, inputs["title"], remind_at)
         logger.info("create_todo: database.create_todo returned id=%s", tid)
+        # Verification: confirm the row actually landed in the DB
+        verified = database.get_todo_by_id(db_path, tid)
+        if not verified:
+            logger.error("create_todo: VERIFICATION FAILED — id=%s not found in DB after insert", tid)
+            return {"ok": False, "error": f"Todo was not persisted (id={tid}). Please try again."}
+        logger.info("create_todo: verified row exists | id=%s | title=%r", tid, verified["title"])
         if remind_at:
             sched.add_reminder(tid, chat_id, inputs["title"], remind_at)
         result: dict = {"ok": True, "id": tid}

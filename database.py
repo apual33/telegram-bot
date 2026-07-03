@@ -148,6 +148,16 @@ def get_todo_by_message_id(db_path: str, message_id: int) -> dict | None:
         return dict(row) if row else None
 
 
+def get_todo_by_id(db_path: str, todo_id: int) -> dict | None:
+    """Return a single todo by id (regardless of done status), or None."""
+    with _conn(db_path) as con:
+        row = con.execute(
+            "SELECT id, chat_id, title, done, remind_at FROM todos WHERE id = ?",
+            (todo_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def snooze_todo(db_path: str, todo_id: int, minutes: int) -> dict | None:
     """Add `minutes` to remind_at and reset reminded=0. Returns {'title', 'remind_at'} or None."""
     with _conn(db_path) as con:
