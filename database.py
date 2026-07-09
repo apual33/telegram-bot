@@ -52,6 +52,15 @@ def init_db(db_path: str) -> None:
             conn.execute("ALTER TABLE todos ADD COLUMN telegram_message_id INTEGER")
         except sqlite3.OperationalError:
             pass  # column already exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS digest_items (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id    INTEGER NOT NULL,
+                category   TEXT    NOT NULL,
+                content    TEXT    NOT NULL,
+                created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
         conn.commit()
 
 
@@ -262,6 +271,29 @@ def format_todo_list(todos: list[dict]) -> str:
             lines.append(f"• {t['title']} [{dt.strftime('%H:%M')}]")
 
     return "\n".join(lines)
+
+
+# ── Digest item history (impulse / question dedup) ───────────────────────
+
+def save_digest_item(db_path: str, chat_id: int, category: str, content: str) -> None:
+    """Save a generated impulse or question so it won't be repeated."""
+    with _conn(db_path) as con:
+        con.execute(
+            "INSERT INTO digest_items (chat_id, category, content) VALUES (?, ?, ?)",
+            (chat_id, category, content),
+        )
+
+
+def recent_digest_items(db_path: str, chat_id: int, category: str, limit: int = 30) -> list[str]:
+    """Return the last `limit` items for the given category."""
+    with _conn(db_path) as con:
+        rows = con.execute(
+            "SELECT content FROM digest_items "
+            "WHERE chat_id = ? AND category = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (chat_id, category, limit),
+        ).fetchall()
+        return [r["content"] for r in rows]
 
 
 # ── History ───────────────────────────────────────────────────────────────────

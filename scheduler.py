@@ -98,12 +98,12 @@ class ReminderScheduler:
             parts.append("✅ Keine offenen To-Dos")
 
         # ── Daily impulse ─────────────────────────────────────────────────────
-        impulse = await self._generate_daily_impulse()
+        impulse = await self._generate_daily_impulse(chat_id, db_path)
         if impulse:
             parts.append(f"🌱 Impuls für heute:\n{impulse}")
 
         # ── Daily question ────────────────────────────────────────────────────
-        question = await self._generate_daily_question()
+        question = await self._generate_daily_question(chat_id, db_path)
         if question:
             parts.append(f"💬 Frage für heute:\n{question}")
 
@@ -117,11 +117,24 @@ class ReminderScheduler:
         if impulse:
             database.append_history(db_path, chat_id, "assistant", digest_text)
 
-    async def _generate_daily_impulse(self) -> str | None:
+    def _format_history_block(self, items: list[str]) -> str:
+        """Format recent items as a numbered list for the prompt."""
+        if not items:
+            return ""
+        lines = "\n".join(f"- {item}" for item in items)
+        return (
+            "\n\nDiese Impulse/Fragen wurden bereits verwendet — "
+            "wiederhole sie NICHT und variiere Thema und Stil:\n" + lines
+        )
+
+    async def _generate_daily_impulse(self, chat_id: int, db_path: str) -> str | None:
         """Generate a daily reflection question or challenge via Claude Sonnet."""
         if not hasattr(self, "_anthropic") or not self._anthropic:
             logger.warning("Anthropic client not set — skipping daily impulse")
             return None
+
+        past = database.recent_digest_items(db_path, chat_id, "impulse")
+        history_block = self._format_history_block(past)
 
         category = random.choice(["reflection", "challenge"])
         if category == "reflection":
@@ -148,33 +161,44 @@ class ReminderScheduler:
                     "Sei kreativ, spezifisch und persönlich. "
                     "Antworte nur mit dem Impuls selbst, kein Intro, keine Erklärung."
                 ),
-                messages=[{"role": "user", "content": category_instruction}],
+                messages=[{"role": "user", "content": category_instruction + history_block}],
             )
-            return response.content[0].text.strip()
+            result = response.content[0].text.strip()
+            database.save_digest_item(db_path, chat_id, "impulse", result)
+            return result
         except Exception:
             logger.exception("Failed to generate daily impulse")
             return None
 
-    async def _generate_daily_question(self) -> str | None:
+    async def _generate_daily_question(self, chat_id: int, db_path: str) -> str | None:
         """Generate a daily question to ask someone, via Claude Sonnet."""
         if not hasattr(self, "_anthropic") or not self._anthropic:
             logger.warning("Anthropic client not set — skipping daily question")
             return None
+
+        past = database.recent_digest_items(db_path, chat_id, "question")
+        history_block = self._format_history_block(past)
 
         try:
             response = await self._anthropic.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=256,
                 system=(
-                    "Du bist ein einfühlsamer Coach. Generiere eine einzige Frage "
-                    "die man jemandem stellen kann — einem Freund, Partner, Kollegen "
-                    "oder Familienmitglied — um etwas Neues und Bedeutungsvolles über "
-                    "ihn herauszufinden. Keine Smalltalk-Fragen. Kreativ, spezifisch, "
-                    "einladend. Nur die Frage selbst, kein Intro."
+                    "Du bist ein lockerer Gesprächs-Coach. Generiere eine einzige Frage, "
+                    "die man jemandem beiläufig stellen kann — einem Freund, Kollegen "
+                    "oder Familienmitglied. Die Frage soll leicht und natürlich klingen, "
+                    "sodass man sie in einem normalen Gespräch stellen kann, ohne dass "
+                    "es sich wie ein Therapie-Gespräch anfühlt. Trotzdem soll sie ein "
+                    "bisschen interessanter sein als reiner Smalltalk und eine echte, "
+                    "persönliche Antwort ermöglichen. "
+                    "Keine pseudo-tiefen oder überrumpelnden Fragen. Leicht, neugierig, einladend. "
+                    "Nur die Frage selbst, kein Intro."
                 ),
-                messages=[{"role": "user", "content": "Generiere eine Frage für heute."}],
+                messages=[{"role": "user", "content": "Generiere eine Frage für heute." + history_block}],
             )
-            return response.content[0].text.strip()
+            result = response.content[0].text.strip()
+            database.save_digest_item(db_path, chat_id, "question", result)
+            return result
         except Exception:
             logger.exception("Failed to generate daily question")
             return None
