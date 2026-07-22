@@ -16,49 +16,9 @@ from scheduler import ReminderScheduler
 logger = logging.getLogger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
-SONNET_MODEL = "claude-sonnet-4-6"
+SONNET_MODEL = "claude-sonnet-5"
 _EMBED_MODEL = "voyage-3"
 _TZ = ZoneInfo("Europe/Berlin")
-
-# Keywords that signal the request needs Sonnet-level reasoning.
-_SONNET_KEYWORDS = (
-    "recherche", "research", "suche in meinen notizen", "was habe ich",
-    "kalender", "calendar", "termine", "appointment",
-)
-# Tools whose presence in prior turns indicates a complex multi-step session.
-_COMPLEX_TOOLS = {"search_notes", "research", "get_calendar_events"}
-
-
-def _extract_last_user_text(messages: list[dict]) -> str:
-    for m in reversed(messages):
-        if m.get("role") == "user":
-            content = m.get("content", "")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                return " ".join(
-                    b.get("text", "") for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                )
-    return ""
-
-
-def _select_model(messages: list[dict]) -> str:
-    """Return Haiku for simple actions, Sonnet when reasoning or complexity needed."""
-    user_text = _extract_last_user_text(messages).lower()
-    if any(kw in user_text for kw in _SONNET_KEYWORDS):
-        return SONNET_MODEL
-    # If this session already used a complex tool, stay on Sonnet.
-    for m in messages:
-        if m.get("role") == "assistant":
-            for block in m.get("content", []):
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "tool_use"
-                    and block.get("name") in _COMPLEX_TOOLS
-                ):
-                    return SONNET_MODEL
-    return HAIKU_MODEL
 
 # web_search_20250305 is a server-side tool — Anthropic executes it internally.
 # The other three are client-side tools that this code executes.
@@ -378,12 +338,25 @@ async def run(
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%S") + tz_offset_iso
     tomorrow_iso = (now + timedelta(days=1)).strftime("%Y-%m-%d")
     tools = _build_tools(now_iso, tomorrow_iso, tz_offset_iso)
-    model = _select_model(messages)
 
     # Track whether the next API call must be forced to call list_todos.
     _force_list_todos = False
 
+    # Model policy: Sonnet handles the first call of every turn and anything
+    # that may still involve tools. Haiku only takes over once tools have run
+    # and the remaining work is expected to be a plain confirmation message.
+    _tools_executed = False
+    # Set if a Haiku follow-up call turned out to need tools after all — from
+    # then on the turn is tool-related, so it stays on Sonnet.
+    _sonnet_locked = False
+
     while True:
+        model = (
+            HAIKU_MODEL
+            if _tools_executed and not _force_list_todos and not _sonnet_locked
+            else SONNET_MODEL
+        )
+
         # Trim to last 10 messages to prevent long histories from diluting tool instructions.
         # Always keep the last message (current user turn) and trim from the front.
         api_messages = messages[-10:] if len(messages) > 10 else messages
@@ -446,6 +419,10 @@ async def run(
             logger.warning("stop_reason=tool_use but no client-side tool calls found — returning text without execution")
             return "\n".join(text_parts) or "(no response)"
 
+        if model == HAIKU_MODEL:
+            logger.info("Haiku follow-up requested tools — pinning turn to Sonnet")
+            _sonnet_locked = True
+
         # Check if any of the calls are create_todo or complete_todo — if so,
         # the next iteration must force list_todos for verification.
         _mutating_tools = {"create_todo", "complete_todo"}
@@ -464,6 +441,7 @@ async def run(
                 "content": json.dumps(result),
             })
         messages.append({"role": "user", "content": tool_results})
+        _tools_executed = True
 
 
 async def _execute(
