@@ -1,8 +1,8 @@
 import logging
-import random
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import httpx
 from anthropic import AsyncAnthropic
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Bot
@@ -13,6 +13,65 @@ from config import Config
 
 _TZ = ZoneInfo("Europe/Berlin")
 logger = logging.getLogger(__name__)
+
+# ── Weather (Open-Meteo, no API key required) ─────────────────────────────────
+_WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+_LEIPZIG_LAT = 51.3397
+_LEIPZIG_LON = 12.3731
+
+# WMO weather codes → German description
+_WEATHER_CODES = {
+    0: "klar",
+    1: "überwiegend klar",
+    2: "teils bewölkt",
+    3: "bedeckt",
+    45: "neblig",
+    48: "Nebel mit Reifbildung",
+    51: "leichter Nieselregen",
+    53: "Nieselregen",
+    55: "starker Nieselregen",
+    56: "gefrierender Nieselregen",
+    57: "starker gefrierender Nieselregen",
+    61: "leichter Regen",
+    63: "Regen",
+    65: "starker Regen",
+    66: "gefrierender Regen",
+    67: "starker gefrierender Regen",
+    71: "leichter Schneefall",
+    73: "Schneefall",
+    75: "starker Schneefall",
+    77: "Schneegriesel",
+    80: "leichte Schauer",
+    81: "Schauer",
+    82: "starke Schauer",
+    85: "leichte Schneeschauer",
+    86: "starke Schneeschauer",
+    95: "Gewitter",
+    96: "Gewitter mit leichtem Hagel",
+    99: "Gewitter mit starkem Hagel",
+}
+
+
+def _weather_description(code: int) -> str:
+    return _WEATHER_CODES.get(code, "wechselhaft")
+
+
+def _weather_emoji(code: int) -> str:
+    if code in (0, 1):
+        return "☀️"
+    if code == 2:
+        return "🌤"
+    if code == 3:
+        return "☁️"
+    if code in (45, 48):
+        return "🌫"
+    if code in (71, 73, 75, 77, 85, 86):
+        return "🌨"
+    if code in (80, 81, 82):
+        return "🌦"
+    if code in (95, 96, 99):
+        return "⛈"
+    return "🌧"
 
 
 class ReminderScheduler:
@@ -97,15 +156,10 @@ class ReminderScheduler:
         else:
             parts.append("✅ Keine offenen To-Dos")
 
-        # ── Daily impulse ─────────────────────────────────────────────────────
-        impulse = await self._generate_daily_impulse(chat_id, db_path)
-        if impulse:
-            parts.append(f"🌱 Impuls für heute:\n{impulse}")
-
-        # ── Daily question ────────────────────────────────────────────────────
-        question = await self._generate_daily_question(chat_id, db_path)
-        if question:
-            parts.append(f"💬 Frage für heute:\n{question}")
+        # ── Weather ───────────────────────────────────────────────────────────
+        weather = await self._generate_weather_summary()
+        if weather:
+            parts.append(weather)
 
         digest_text = "\n\n".join(parts)
         await self._bot.send_message(
@@ -113,94 +167,108 @@ class ReminderScheduler:
             text=digest_text,
         )
 
-        # Save impulse to history so the AI can respond to follow-ups
-        if impulse:
-            database.append_history(db_path, chat_id, "assistant", digest_text)
+        # Save to history so the AI can respond to follow-ups
+        database.append_history(db_path, chat_id, "assistant", digest_text)
 
-    def _format_history_block(self, items: list[str]) -> str:
-        """Format recent items as a numbered list for the prompt."""
-        if not items:
-            return ""
-        lines = "\n".join(f"- {item}" for item in items)
-        return (
-            "\n\nDiese Impulse/Fragen wurden bereits verwendet — "
-            "wiederhole sie NICHT und variiere Thema und Stil:\n" + lines
+    async def _fetch_weather(self) -> dict | None:
+        """Fetch today's Leipzig forecast from Open-Meteo (no API key needed)."""
+        try:
+            async with httpx.AsyncClient() as http:
+                r = await http.get(
+                    _WEATHER_URL,
+                    params={
+                        "latitude": _LEIPZIG_LAT,
+                        "longitude": _LEIPZIG_LON,
+                        "current": "temperature_2m,weather_code",
+                        "hourly": "weather_code,precipitation_probability,precipitation",
+                        "daily": "temperature_2m_max",
+                        "timezone": "Europe/Berlin",
+                        "forecast_days": 1,
+                    },
+                    timeout=10,
+                )
+                r.raise_for_status()
+                return r.json()
+        except Exception:
+            logger.exception("Open-Meteo request failed")
+            return None
+
+    async def _generate_weather_summary(self) -> str | None:
+        """One-line German weather summary for Leipzig."""
+        data = await self._fetch_weather()
+        if not data:
+            return None
+
+        try:
+            current = data["current"]
+            hourly = data["hourly"]
+            temp_now = round(current["temperature_2m"])
+            temp_max = round(data["daily"]["temperature_2m_max"][0])
+
+            # Only the rest of the day is interesting — the digest fires in the morning.
+            now_hour = datetime.now(_TZ).hour
+            slots: list[tuple[int, int, int, float]] = []
+            for i, stamp in enumerate(hourly["time"]):
+                hour = int(stamp[11:13])
+                if now_hour <= hour <= 22:
+                    slots.append(
+                        (
+                            hour,
+                            int(hourly["weather_code"][i]),
+                            int(hourly["precipitation_probability"][i] or 0),
+                            float(hourly["precipitation"][i] or 0.0),
+                        )
+                    )
+        except (KeyError, IndexError, TypeError, ValueError):
+            logger.exception("Unexpected Open-Meteo response shape")
+            return None
+
+        if not slots:
+            slots = [(now_hour, int(current.get("weather_code", 3)), 0, 0.0)]
+
+        # Emoji reflects the most notable condition of the remaining day.
+        emoji = _weather_emoji(max(code for _, code, _, _ in slots))
+        temps = f"Jetzige Temperatur {temp_now} °C, maximal heute {temp_max} °C."
+
+        description = await self._describe_weather(slots)
+        if not description:
+            dominant = _weather_description(max(code for _, code, _, _ in slots))
+            description = f"Heute überwiegend {dominant}."
+
+        return f"{emoji} {description} {temps}"
+
+    async def _describe_weather(self, slots: list[tuple[int, int, int, float]]) -> str | None:
+        """Turn the hourly forecast into one short natural German sentence."""
+        if not getattr(self, "_anthropic", None):
+            logger.warning("Anthropic client not set — using template weather text")
+            return None
+
+        forecast_block = "\n".join(
+            f"{hour:02d}:00 — {_weather_description(code)}, "
+            f"Regenwahrscheinlichkeit {prob} %, Niederschlag {precip} mm"
+            for hour, code, prob, precip in slots
         )
 
-    async def _generate_daily_impulse(self, chat_id: int, db_path: str) -> str | None:
-        """Generate a daily reflection question or challenge via Claude Sonnet."""
-        if not hasattr(self, "_anthropic") or not self._anthropic:
-            logger.warning("Anthropic client not set — skipping daily impulse")
-            return None
-
-        past = database.recent_digest_items(db_path, chat_id, "impulse")
-        history_block = self._format_history_block(past)
-
-        category = random.choice(["reflection", "challenge"])
-        if category == "reflection":
-            category_instruction = (
-                "Generiere eine tiefe, persönliche Reflexionsfrage. "
-                "Die Frage soll zum Nachdenken anregen und ehrliche Selbstreflexion fördern. "
-                "Beispiel-Niveau (aber nicht kopieren): 'Wann hast du zuletzt etwas getan, das dich wirklich stolz gemacht hat?'"
-            )
-        else:
-            category_instruction = (
-                "Generiere eine konkrete kleine Tagesaufgabe/Challenge. "
-                "Sie soll entweder aus der Komfortzone holen oder eine Beziehung stärken. "
-                "Beispiel-Niveau (aber nicht kopieren): 'Schreib heute jemandem eine Nachricht, dem du lange nicht geschrieben hast.'"
-            )
-
         try:
             response = await self._anthropic.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=256,
+                max_tokens=128,
                 system=(
-                    "Du bist ein einfühlsamer persönlicher Coach. "
-                    "Generiere entweder eine tiefe Reflexionsfrage oder eine konkrete Tagesaufgabe. "
-                    "Keine Klischees. Keine oberflächlichen Fragen. "
-                    "Sei kreativ, spezifisch und persönlich. "
-                    "Antworte nur mit dem Impuls selbst, kein Intro, keine Erklärung."
+                    "Du fasst Wettervorhersagen zusammen. Schreibe EINEN kurzen, "
+                    "natürlichen deutschen Satz über den Tagesverlauf in Leipzig. "
+                    "Fasse den Tag in Abschnitten zusammen (vormittags, mittags, "
+                    "nachmittags, abends) und nenne nur das, was wirklich auffällt. "
+                    "Höchstens 20 Wörter. "
+                    "Beispiel-Stil (nicht kopieren): 'Bis mittags bewölkt aber trocken, "
+                    "nachmittags starker Regen erwartet.' "
+                    "Keine Temperaturangaben, kein Emoji, kein Intro, keine Uhrzeiten "
+                    "in Ziffern. Antworte nur mit dem Satz."
                 ),
-                messages=[{"role": "user", "content": category_instruction + history_block}],
+                messages=[{"role": "user", "content": forecast_block}],
             )
-            result = response.content[0].text.strip()
-            database.save_digest_item(db_path, chat_id, "impulse", result)
-            return result
+            return response.content[0].text.strip()
         except Exception:
-            logger.exception("Failed to generate daily impulse")
-            return None
-
-    async def _generate_daily_question(self, chat_id: int, db_path: str) -> str | None:
-        """Generate a daily question to ask someone, via Claude Sonnet."""
-        if not hasattr(self, "_anthropic") or not self._anthropic:
-            logger.warning("Anthropic client not set — skipping daily question")
-            return None
-
-        past = database.recent_digest_items(db_path, chat_id, "question")
-        history_block = self._format_history_block(past)
-
-        try:
-            response = await self._anthropic.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=256,
-                system=(
-                    "Du bist ein lockerer Gesprächs-Coach. Generiere eine einzige Frage, "
-                    "die man jemandem beiläufig stellen kann — einem Freund, Kollegen "
-                    "oder Familienmitglied. Die Frage soll leicht und natürlich klingen, "
-                    "sodass man sie in einem normalen Gespräch stellen kann, ohne dass "
-                    "es sich wie ein Therapie-Gespräch anfühlt. Trotzdem soll sie ein "
-                    "bisschen interessanter sein als reiner Smalltalk und eine echte, "
-                    "persönliche Antwort ermöglichen. "
-                    "Keine pseudo-tiefen oder überrumpelnden Fragen. Leicht, neugierig, einladend. "
-                    "Nur die Frage selbst, kein Intro."
-                ),
-                messages=[{"role": "user", "content": "Generiere eine Frage für heute." + history_block}],
-            )
-            result = response.content[0].text.strip()
-            database.save_digest_item(db_path, chat_id, "question", result)
-            return result
-        except Exception:
-            logger.exception("Failed to generate daily question")
+            logger.exception("Failed to generate weather description")
             return None
 
     async def _fire(self, todo_id: int, chat_id: int, title: str) -> None:
