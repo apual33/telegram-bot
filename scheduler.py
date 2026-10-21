@@ -24,6 +24,10 @@ _WEATHER_BACKOFF = 2.0  # seconds, multiplied by the attempt number
 # Shown instead of silently dropping the section when the forecast is unreachable.
 _WEATHER_UNAVAILABLE = "🌡 Wetterdaten für Aachen sind gerade nicht abrufbar."
 
+# ── Random note of the day ────────────────────────────────────────────────────
+_NOTE_REPEAT_WINDOW = 30  # don't repeat any of the last N shown notes, if avoidable
+_NOTE_MAX_CHARS = 1500  # keeps the digest well below Telegram's 4096-char limit
+
 # WMO weather codes → German description
 _WEATHER_CODES = {
     0: "klar",
@@ -180,6 +184,15 @@ class ReminderScheduler:
         if weather:
             parts.append(weather)
 
+        # ── Random note ───────────────────────────────────────────────────────
+        try:
+            note = self._pick_random_note(chat_id, db_path)
+        except Exception:
+            logger.exception("Picking a random note failed")
+            note = None
+        if note:
+            parts.append(note)
+
         digest_text = "\n\n".join(parts)
         await self._bot.send_message(
             chat_id=chat_id,
@@ -188,6 +201,35 @@ class ReminderScheduler:
 
         # Save to history so the AI can respond to follow-ups
         database.append_history(db_path, chat_id, "assistant", digest_text)
+
+    def _pick_random_note(self, chat_id: int, db_path: str) -> str | None:
+        """A random note from the archive, avoiding recently shown ones."""
+        recent = [
+            int(i)
+            for i in database.recent_digest_items(db_path, chat_id, "note", _NOTE_REPEAT_WINDOW)
+            if i.isdigit()
+        ]
+        # With only a few notes the full window excludes everything — then just
+        # avoid yesterday's, and as a last resort allow any note.
+        note = (
+            database.random_note(db_path, chat_id, recent)
+            or (recent and database.random_note(db_path, chat_id, recent[:1]))
+            or database.random_note(db_path, chat_id)
+        )
+        if not note:
+            return None
+
+        database.save_digest_item(db_path, chat_id, "note", str(note["id"]))
+
+        content = note["content"].strip()
+        if len(content) > _NOTE_MAX_CHARS:
+            content = content[:_NOTE_MAX_CHARS].rstrip() + " …"
+        try:
+            saved = datetime.fromisoformat(note["created_at"]).replace(tzinfo=timezone.utc)
+            header = f"📝 Notiz vom {saved.astimezone(_TZ):%d.%m.%Y}:"
+        except (TypeError, ValueError):
+            header = "📝 Notiz aus deinem Archiv:"
+        return f"{header}\n{content}"
 
     async def _fetch_weather(self) -> dict | None:
         """Fetch today's Aachen forecast from Open-Meteo (no API key needed).

@@ -241,6 +241,20 @@ def search_notes_text(db_path: str, chat_id: int, query: str) -> list[dict]:
 search_notes = search_notes_text
 
 
+def random_note(db_path: str, chat_id: int, exclude_ids: list[int] | None = None) -> dict | None:
+    """Return one random note, skipping the given ids; None if nothing matches."""
+    exclude_ids = exclude_ids or []
+    placeholders = ",".join("?" * len(exclude_ids))
+    where = "chat_id = ?" + (f" AND id NOT IN ({placeholders})" if exclude_ids else "")
+    with _conn(db_path) as con:
+        row = con.execute(
+            f"SELECT id, content, type, created_at FROM notes WHERE {where} "
+            "ORDER BY RANDOM() LIMIT 1",
+            (chat_id, *exclude_ids),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 # ── Formatting ────────────────────────────────────────────────────────────────
 
 def format_todo_list(todos: list[dict]) -> str:
@@ -273,10 +287,10 @@ def format_todo_list(todos: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# ── Digest item history (impulse / question dedup) ───────────────────────
+# ── Digest item history (dedup of things shown in the daily digest) ──────
 
 def save_digest_item(db_path: str, chat_id: int, category: str, content: str) -> None:
-    """Save a generated impulse or question so it won't be repeated."""
+    """Remember an item shown in the digest so it won't be repeated soon."""
     with _conn(db_path) as con:
         con.execute(
             "INSERT INTO digest_items (chat_id, category, content) VALUES (?, ?, ?)",
