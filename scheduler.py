@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -16,8 +17,12 @@ logger = logging.getLogger(__name__)
 
 # ── Weather (Open-Meteo, no API key required) ─────────────────────────────────
 _WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
-_LEIPZIG_LAT = 51.3397
-_LEIPZIG_LON = 12.3731
+_AACHEN_LAT = 50.7753
+_AACHEN_LON = 6.0839
+_WEATHER_ATTEMPTS = 3
+_WEATHER_BACKOFF = 2.0  # seconds, multiplied by the attempt number
+# Shown instead of silently dropping the section when the forecast is unreachable.
+_WEATHER_UNAVAILABLE = "🌡 Wetterdaten für Aachen sind gerade nicht abrufbar."
 
 # WMO weather codes → German description
 _WEATHER_CODES = {
@@ -54,6 +59,20 @@ _WEATHER_CODES = {
 
 def _weather_description(code: int) -> str:
     return _WEATHER_CODES.get(code, "wechselhaft")
+
+
+def _num(*candidates: object) -> float | None:
+    """First usable number among the candidates, else None.
+
+    Open-Meteo can return null for individual values while a model run is being
+    refreshed — around 04:00 UTC, which is exactly when the 06:00 digest fires.
+    """
+    for value in candidates:
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
 
 
 def _weather_emoji(code: int) -> str:
@@ -171,71 +190,137 @@ class ReminderScheduler:
         database.append_history(db_path, chat_id, "assistant", digest_text)
 
     async def _fetch_weather(self) -> dict | None:
-        """Fetch today's Leipzig forecast from Open-Meteo (no API key needed)."""
-        try:
-            async with httpx.AsyncClient() as http:
-                r = await http.get(
-                    _WEATHER_URL,
-                    params={
-                        "latitude": _LEIPZIG_LAT,
-                        "longitude": _LEIPZIG_LON,
-                        "current": "temperature_2m,weather_code",
-                        "hourly": "weather_code,precipitation_probability,precipitation",
-                        "daily": "temperature_2m_max",
-                        "timezone": "Europe/Berlin",
-                        "forecast_days": 1,
-                    },
-                    timeout=10,
-                )
-                r.raise_for_status()
-                return r.json()
-        except Exception:
-            logger.exception("Open-Meteo request failed")
-            return None
+        """Fetch today's Aachen forecast from Open-Meteo (no API key needed).
 
-    async def _generate_weather_summary(self) -> str | None:
-        """One-line German weather summary for Leipzig."""
+        Retries a few times: a single transient network hiccup on the host used
+        to make the whole weather section vanish from the digest without a trace.
+        """
+        params = {
+            "latitude": _AACHEN_LAT,
+            "longitude": _AACHEN_LON,
+            "current": "temperature_2m,weather_code",
+            "hourly": "temperature_2m,weather_code,precipitation_probability,precipitation",
+            "daily": "temperature_2m_max",
+            "timezone": "Europe/Berlin",
+            "forecast_days": 1,
+        }
+        timeout = httpx.Timeout(20.0, connect=10.0)
+        last_error = "unknown"
+
+        for attempt in range(1, _WEATHER_ATTEMPTS + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as http:
+                    r = await http.get(_WEATHER_URL, params=params)
+                if r.status_code != 200:
+                    # Open-Meteo explains refusals (rate limit, bad params) in the body.
+                    last_error = f"HTTP {r.status_code}: {r.text[:200]}"
+                else:
+                    data = r.json()
+                    if data.get("error"):
+                        last_error = f"API error: {data.get('reason')}"
+                    else:
+                        if attempt > 1:
+                            logger.info("Open-Meteo succeeded on attempt %d", attempt)
+                        return data
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+
+            logger.warning(
+                "Open-Meteo attempt %d/%d failed — %s", attempt, _WEATHER_ATTEMPTS, last_error
+            )
+            if attempt < _WEATHER_ATTEMPTS:
+                await asyncio.sleep(_WEATHER_BACKOFF * attempt)
+
+        logger.error(
+            "Open-Meteo unreachable after %d attempts — last error: %s",
+            _WEATHER_ATTEMPTS,
+            last_error,
+        )
+        return None
+
+    async def _generate_weather_summary(self) -> str:
+        """One-line German weather summary for Aachen.
+
+        Tolerates gaps: individual null values are skipped rather than
+        discarding the whole forecast, and each temperature has a fallback
+        source. Always returns a line, so a failure is visible in the digest
+        instead of silently removing the section.
+        """
         data = await self._fetch_weather()
         if not data:
-            return None
+            return _WEATHER_UNAVAILABLE
 
-        try:
-            current = data["current"]
-            hourly = data["hourly"]
-            temp_now = round(current["temperature_2m"])
-            temp_max = round(data["daily"]["temperature_2m_max"][0])
+        current = data.get("current") or {}
+        hourly = data.get("hourly") or {}
+        daily = data.get("daily") or {}
 
-            # Only the rest of the day is interesting — the digest fires in the morning.
-            now_hour = datetime.now(_TZ).hour
-            slots: list[tuple[int, int, int, float]] = []
-            for i, stamp in enumerate(hourly["time"]):
-                hour = int(stamp[11:13])
-                if now_hour <= hour <= 22:
-                    slots.append(
-                        (
-                            hour,
-                            int(hourly["weather_code"][i]),
-                            int(hourly["precipitation_probability"][i] or 0),
-                            float(hourly["precipitation"][i] or 0.0),
-                        )
-                    )
-        except (KeyError, IndexError, TypeError, ValueError):
-            logger.exception("Unexpected Open-Meteo response shape")
-            return None
+        times = hourly.get("time") or []
+        codes = hourly.get("weather_code") or []
+        probs = hourly.get("precipitation_probability") or []
+        precs = hourly.get("precipitation") or []
+        hour_temps = hourly.get("temperature_2m") or []
 
-        if not slots:
-            slots = [(now_hour, int(current.get("weather_code", 3)), 0, 0.0)]
+        def at(seq: list, i: int) -> object:
+            return seq[i] if 0 <= i < len(seq) else None
+
+        # Only the rest of the day is interesting — the digest fires in the morning.
+        now_hour = datetime.now(_TZ).hour
+        slots: list[tuple[int, int, int, float]] = []
+        gaps = 0
+        for i, stamp in enumerate(times):
+            try:
+                hour = int(str(stamp)[11:13])
+            except (TypeError, ValueError):
+                gaps += 1
+                continue
+            if not now_hour <= hour <= 22:
+                continue
+            code = _num(at(codes, i))
+            if code is None:
+                gaps += 1
+                continue
+            slots.append(
+                (
+                    hour,
+                    int(code),
+                    int(_num(at(probs, i)) or 0),
+                    _num(at(precs, i)) or 0.0,
+                )
+            )
+        if gaps:
+            logger.warning("Open-Meteo: skipped %d hourly entry/entries without data", gaps)
+
+        current_code = _num(current.get("weather_code"))
+        temp_now = _num(current.get("temperature_2m"), at(hour_temps, now_hour))
+        temp_max = _num(
+            at(daily.get("temperature_2m_max") or [], 0),
+            max((t for t in hour_temps if isinstance(t, (int, float))), default=None),
+        )
+
+        if not slots and current_code is None and temp_now is None and temp_max is None:
+            logger.error("Open-Meteo returned no usable values — keys: %s", sorted(data.keys()))
+            return _WEATHER_UNAVAILABLE
 
         # Emoji reflects the most notable condition of the remaining day.
-        emoji = _weather_emoji(max(code for _, code, _, _ in slots))
-        temps = f"Jetzige Temperatur {temp_now} °C, maximal heute {temp_max} °C."
+        notable = max((code for _, code, _, _ in slots), default=None)
+        if notable is None:
+            notable = int(current_code) if current_code is not None else 3
+        emoji = _weather_emoji(notable)
 
-        description = await self._describe_weather(slots)
+        if temp_now is not None and temp_max is not None:
+            temps = f"Jetzige Temperatur {round(temp_now)} °C, maximal heute {round(temp_max)} °C."
+        elif temp_now is not None:
+            temps = f"Jetzige Temperatur {round(temp_now)} °C."
+        elif temp_max is not None:
+            temps = f"Maximal heute {round(temp_max)} °C."
+        else:
+            temps = ""
+
+        description = await self._describe_weather(slots) if slots else None
         if not description:
-            dominant = _weather_description(max(code for _, code, _, _ in slots))
-            description = f"Heute überwiegend {dominant}."
+            description = f"Heute überwiegend {_weather_description(notable)}."
 
-        return f"{emoji} {description} {temps}"
+        return f"{emoji} {description} {temps}".strip()
 
     async def _describe_weather(self, slots: list[tuple[int, int, int, float]]) -> str | None:
         """Turn the hourly forecast into one short natural German sentence."""
@@ -255,7 +340,7 @@ class ReminderScheduler:
                 max_tokens=128,
                 system=(
                     "Du fasst Wettervorhersagen zusammen. Schreibe EINEN kurzen, "
-                    "natürlichen deutschen Satz über den Tagesverlauf in Leipzig. "
+                    "natürlichen deutschen Satz über den Tagesverlauf in Aachen. "
                     "Fasse den Tag in Abschnitten zusammen (vormittags, mittags, "
                     "nachmittags, abends) und nenne nur das, was wirklich auffällt. "
                     "Höchstens 20 Wörter. "
